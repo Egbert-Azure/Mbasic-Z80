@@ -5,7 +5,7 @@ This is a 8080 to Z80 translation of Microsoft's MBASIC 5.2 for CP/M.
 The 8080 assembler source can be downloaded from
 [Winworldpc](https://winworldpc.com/product/microsoft-basic/80)
 
-I wrote a Ruby script to translate 8080 mnemonics to (more readable
+I wrote [a Ruby script](8080toz80.rb) to translate 8080 mnemonics to (more readable
 imho) Z80 mnemonics.
 
 I also verified the correctness of the translation by running it
