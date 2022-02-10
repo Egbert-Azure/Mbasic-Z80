@@ -1,0 +1,1222 @@
+	.symlen 6
+	SUBTTL	Common file for BASIC interpreter
+	.SALL
+
+CONTO	defl 15	; CHARACTER TO SUPRESS OUTPUT (USUALLY CONTROL-O)
+DBLTRN	defl 0	; FOR DOUBLE PRECISION TRANSCENDENTALS
+	IF2
+
+	.printx	/EXTENDED/
+
+
+	.printx	/LPT/
+
+	.printx	/CPM DISK/
+
+
+	.printx	/Z80/
+
+	.printx	/FAST/
+
+	.printx	/5.0 FEATURES/
+
+	.printx	/ANSI COMPATIBLE/
+	ENDIF
+
+CLMWID	defl 14	; MAKE COMMA COLUMNS FOURTEEN CHARACTERS
+DATPSC	defl 128	; NUMBER OF DATA BYTES IN DISK SECTOR
+LINLN	defl 80	; TERMINAL LINE LENGTH
+LPTLEN	defl 132
+BUFLEN	defl 255	; LONG LINES
+NAMLEN	defl 40	; MAXIMUM LENGTH NAME -- 3 TO 127
+
+NUMLEV	defl 0*20+19+2*5	; NUMBER OF STACK LEVELS RESERVED
+			; BY AN EXPLICIT CALL TO GETSTK
+
+STRSIZ	defl 4
+
+STRSIZ	defl 3
+NUMTMP	defl 3	; NUMBER OF STRING TEMPORARIES
+
+NUMTMP	defl 10
+
+MD.RND	defl 3	; THE MODE NUMBER FOR RANDOM FILES
+MD.SQI	defl 1	; THE MODE NUMBER FOR SEQUENTIAL INPUT FILES
+			; NEVER WRITTEN INTO A FILE
+MD.SQO	defl 2	; THE MODE FOR SEQUENTIAL OUTPUT FILES
+			; AND PROGRAM FILES
+CPMWRM	defl 0	; CP/M WARM BOOT ADDR
+CPMENT	defl CPMWRM+5	; CP/M BDOS CALL ADDR
+	CSEG
+TRUROM	defl 0
+	PAGE
+	SUBTTL	DISK PARAMETERS AND DOCUMENTATION
+	TITLE	Disk code for CPM/ONTEL/MOSTEK/DMC/BEEHIVE: WHG,PGA,MBM
+
+
+;External symbols
+
+
+	EXTRN	DERBFM,DERBFN,DERBRN,DERDFL
+	EXTRN	DERFAO,DERFNF,DERIOE,DERNMF,DERTMF
+	EXTRN	FINPRT,OUTDO,CRDO
+	EXTRN	TEMP,STROUT,STRLT3,SNERR,SCRTCH
+	EXTRN	FACLO,FOUT,CONINT
+	EXTRN	CLSALL,FILFRM,FILIDX,GETBYT,FILSCN
+
+
+	EXTRN	BUF
+
+
+	EXTRN	DCOMPR,GETYPR,SYNCHR
+
+	EXTRN	FILNAM
+	EXTRN	FILNA2
+	EXTRN	DIRTMP
+;Internal symbols
+
+	PUBLIC	NTOPNC,FILOUT,FILOU3,INDSKC
+	PUBLIC	NMLOFS,NMLOFC,NMLO.C,DATOFS,DATOFC,LOCOFS
+	PUBLIC	EOF,CLSFIL,LOC
+	PUBLIC	NAME,OPEN,KILL,INDSKB,PRGFIL
+
+
+
+
+;
+;
+;			Revision history
+;			-------- -------
+;
+;11/7/77		FIXED EOF() CODE TO USE ORNOFS INSTEAD OF NMLOFS, PGA
+;12/2/77  (4.41) FIXED RANDOM ACCESS TO CLOSE EXTENTS PGA
+;12/17/77	ADDITIONAL CODE TO SUPPORT ONTEL DOS BASIC, P.ZILBER
+;12/29/77 (4.42)	FIXED BUG WHERE GET, PUT W/O REC NOT INC CURLOC, PGA
+;1/5/78   (4.43) FIXED ANOTHER RANDOM BUG, LINE PRINTER ^C PROB. PGA
+;7/23/79		Add Beehive interace and cleanup conditionals
+;
+;
+;
+;File information:
+;
+;	 1	Mode of the file
+;F.BLK1	(n)	1st block of space, usually FCB( CPM: 33, ONTEL: 42,
+;		MOSTEK: 47 ). Zero for others
+;LOCOFS	 2	CURLOC, # of sectors read or writeen for sequential.
+;		For random files, it is the last record # +1.
+;ORNOFS	 1/2	Seq Input: 	# of bytes in sector when read.
+;		Seq Output:	# bytes in output sector( # written )
+;		Random:		Set to DATPSC by PUT and GET, sometimes
+;				zeroed by OUTSQ2 setup for DSKOUT code.
+;NMLOFS	 1/2	Seq Input:	# bytes left in input buffer
+;		Seq Output:	Position of imaginary print head
+;F.BLK2	(n)	2nd block of space( 6 byte chain links for ONTEL,
+;		160 bytes for DMC, 10 bytes for BEEHIV )
+;DATOFS	(n)	Sector buffer, Length = DATPSC
+;
+;Extra information for 5.0 version only:
+;
+;FD.SIZ	 2	Variable length record size( default = 128 )
+;FD.PHY	 2	Current physical record #
+;FD.LOG	 2	Current logical record #
+;FD.CHG	 1	Future flag for across record PRINTs, etc.
+;FD.OPS	 2	Output print position for PRINT, INPUT, WRITE
+;FD.DAT	(n)	Data buffer for FIELD, size is (FD.SIZ). FD.MAX is max.
+;
+;%
+
+;File modes
+
+MD.000	defl 0	; THE MODE NUMBER FOR NO FILE, INTERNAL
+			; USE ONLY AS AN ESCAPE FROM OPEN
+MD.RND	defl 3	; THE MODE NUMBER FOR RANDOM FILES
+MD.SQI	defl 1	; THE MODE NUMBER FOR SEQUENTIAL INPUT
+			; FILES NEVER WRITTEN INTO A FILE
+MD.SQO	defl 2	; THE MODE FOR SEQUENTIAL OUTPUT FILES
+			; AND PROGRAM FILES
+
+;Disk code configuration switches
+
+SPC1ST	defl 1 OR 0 OR 0 OR 0 OR 0 OR 0;1st block exists
+SPC2ND	defl 0 OR 0 OR 0	; 2nd block exists
+SW2BYT	defl 0 OR 0 OR 0	; 2 byte offsets (DATPSC .GT. 255)
+SWLOF	defl 1 OR 0 OR 0 OR 0 OR 0 OR 0;There is a LOF function
+SWRES	defl 1 OR 0 OR 0	; There is a RESET statement
+SWFIL	defl 0 OR 1 OR 0 OR 0 OR 0	; There is a FILES command
+SWDSKF	defl (0 OR 0) AND (0-1)	; There is a DSKF function
+
+; Offsets into file blocks for specific entries
+
+LOCOFS	defl 34+3*1+9*0+14*0-10*0+267*0-30*0;OFFSET TO CURLOC BYTES
+ORNOFS	defl 2+LOCOFS	; OFFSET TO NUMBER OF BYTES
+			; ORIGINALLY IN THE BUFFER
+NMLOFS	defl 1+ORNOFS+0	; OFFSET TO BYTES REMAINING IN THE BUFFER
+NMLOFC	defl 0+NMLOFS
+			; OR THE PRINT POSITION ON OUTPUT
+NMLO.C	defl 0+NMLOFS
+
+
+DATOFS	defl 1+NMLOFS+0+6*0+288*0+10*0;OFFSET TO BUFFER
+DATOFC	defl 0+DATOFS
+DBLKSZ	defl DATOFS+DATPSC
+	PUBLIC	DBLK.C
+DBLK.C	defl 0+DBLKSZ
+
+Q	defl DBLKSZ
+;DEFINE	ENT(SYM,SIZ),<
+;INTERN	SYM
+;SYM=Q
+;Q=Q+SIZ>
+
+	PUBLIC	FD.SIZ,FD.PHY,FD.LOG,FD.CHG,FD.OPS,FD.DAT
+FD.MAX	defl 0	; Size of FIELD buffer
+
+;ENT	FD.SIZ,2		;Variable length record size default 128
+FD.SIZ	defl Q
+Q	defl Q+2
+;ENT	FD.PHY,2		;Current physical record #
+FD.PHY	defl Q
+Q	defl Q+2
+;ENT	FD.LOG,2		;Current logical record number
+FD.LOG	defl Q
+Q	defl Q+2
+;ENT	FD.CHG,1		;Future flag for accross block PRINTs etc.
+FD.CHG	defl Q
+Q	defl Q+1
+;ENT	FD.OPS,2		;Output print position for PRINT, INPUT, WRITE
+FD.OPS	defl Q
+Q	defl Q+2
+;ENT	FD.DAT,FD.MAX		;Actual FIELD data buffer
+FD.DAT	defl Q
+Q	defl Q+FD.MAX
+			; Size is FD.SIZ bytes long
+
+	PUBLIC	FNZBLK
+FNZBLK	defl 0+Q
+
+EOFCHR	defl 26+2*0-22*0-23*0	; END OF FILE CHARACTER
+
+	SUBTTL	Operating system calls and other data
+
+
+	EXTRN	CPMVRN,CPMREA,CPMWRI
+
+; CPM CALL IDENTIFIERS
+
+C.OPEN	defl 15
+C.CLOS	defl 16
+C.DELE	defl 19
+;C.WRIT==21
+C.MAKE	defl 22
+C.RENA	defl 23
+C.BUFF	defl 26	; SET DMA ADDRESS
+C.GDRV	defl 25	; GET CURRENTLY SELECTED DRIVE
+C.SDRV	defl 14	; SET CURRENTLY SELECTED DRIVE
+C.REST	defl 13	; INITIALIZE BDOS
+C.SEAR	defl 17	; SEARCH FOR FILE
+
+; OFFSETS INTO CP/M FCB (FILE CONTROL BLOCK)
+FCB.FN	defl 1-0	; FILE NAME
+FCB.FT	defl 9-0	; EXTENSION
+FCB.EX	defl 12+20*0	; FILE EXTENT
+FCB.RC	defl 15+23*0	; RECORD COUNT = CURRENT EXTENT SIZE
+FCB.NR	defl 32+8*0	; NEXT RECORD NUMBER
+FCB.RN	defl 33	; CP/M 2.x Random Record Number
+
+
+
+
+
+;Special for CP/M testing
+
+	SUBTTL	EOF function
+
+	PUBLIC	EOF
+EOF::		; CONVERT ARGUMENT TO FILE NUMBER
+	jp	z,DERBFN	; BAD FILE NUMBER - NOT FOUND !!!
+			; AND SET [B,C] TO POINT TO FILE DATA BLOCK
+	cp	MD.SQO	; IS IT A SEQUENTIAL OUTPUT FILE?
+	jp	z,DERBFM	; THEN GIVE BAD FILE MODE
+ORNCHK:	ld	hl,0+ORNOFS	; SEE IF ANY BYTES ARRIVED IN THIS BUFFER
+	add	hl,bc
+	ld	a,(hl)	; ZERO IFF IT IS END OF FILE
+	or	a	; SET CC'S
+	jp	z,WASEOF	; NO BYTES LEFT
+	ld	a,(bc)	; ** 5.11 ** GET FILE MODE
+	cp	MD.RND	; IS IT A RANDOM FILE?
+	jp	z,WASEOF	; ** 5.11 ** (A) .NE. 0 - not EOF
+	inc	hl	; POINT TO NUMBER LEFT IN BUFFER
+	ld	a,(hl)	; GET NUMBER OF BYTES IN BUFFER
+	or	a	; NON-ZERO?
+	jp	nz,CHKCTZ	; THEN CHECK FOR CONTROL-Z
+	push	bc	; SAVE [B,C]
+	ld	h,b	; GET FCB POINTER IN [B,C]
+	ld	l,c
+	call	READIN	; READ ANOTHER BUFFER
+	pop	bc	; RESTORE [B,C]
+	jp	ORNCHK	; HAVE NEW BUFFER, USE PREVIOUS PROCEDURE
+CHKCTZ:	ld	a,DATPSC AND 0ffh	; GET # OF BYTES IN FULL BUFFER
+	sub	(hl)	; SUBTRACT LEFT
+	ld	c,a	; PUT IN [B,C] FOR DAD
+	ld	b,0
+	add	hl,bc	; ADD TO ORNOFS OFFSET
+	inc	hl	; ADD ONE TO POINT TO BYTE IN BUFFER
+	ld	a,(hl)	; GET BYTE
+	sub	EOFCHR	; IF CONTROL-Z, EOF (CONTROL-\ IS FS)
+WASEOF:	sub	1	; MAP 0 TO -1 AND ALL OTHERS TO 0
+	sbc	a,a
+	jp	CONIA##	; CONVERT TO AN INTEGER AND RETURN
+
+	SUBTTL	OUTSEQ -- Sequential output for a data block
+
+;
+; [B,C] POINTS AT FILE DATA BLOCK
+;
+	PUBLIC	OUTSEQ
+OUTSEQ:	ld	d,b	; PUT FILE BLOCK OFFSET IN [D,E]
+	ld	e,c
+	inc	de	; POINT TO FCB
+OUTSQ2:	ld	hl,0+ORNOFS	; POINT TO NUMBER IN BUFFER
+	add	hl,bc	; ADD START OF FILE DATA BLOCK
+	push	bc	; SAVE FILE DATA POINTER
+	xor	a
+	ld	(hl),a	; ZERO OUT NUMBER IN DATA BUFFER
+
+;	OUTPUT NEXT RECORD IN FILE
+;
+;	(A) = 0
+;	(HL) points to NMLOFS-1
+;	(DE) points to File Data Block + 1 ( FCB if SPC2ND=0)
+;	(BC) points to File Data Block
+
+	call	SETBUF	; SET BUFFER ADDRESS
+	ld	a,(CPMWRI)	; Get write code
+	call	ACCFIL	; Access file
+	cp	255
+	jp	z,DERTMF	; Too many files - 5.11
+	dec	a	; ERROR EXTENDING FILE? (1)
+	jp	z,DERIOE	; YES
+	dec	a	; DISK FULL? (2)
+	jp	nz,OUTSOK	; NO
+	pop	de	; GET BACK FILE POINTER
+	xor	a	; GET ZERO
+	ld	(de),a	; MARK AS CLOSED
+	ld	c,C.CLOS	; CLOSE IT
+	inc	de	; POINT TO FCB
+	call	CPMENT	; CALL CP/M
+	jp	DERDFL	; GIVE "DISK FULL" ERROR MESSAGE
+OUTSOK:	inc	a	; TOO MANY FILES?
+	jp	z,DERTMF	; YES
+
+	pop	bc	; GET POINTER AT CURLOC
+	ld	hl,0+LOCOFS	; BY ADDING OFFSET TO FILE POINTER
+	add	hl,bc
+	ld	e,(hl)	; INCREMENT IT
+	inc	hl
+	ld	d,(hl)
+	inc	de
+	ld	(hl),d
+	dec	hl
+	ld	(hl),e
+	ret
+
+	SUBTTL	CLOSE A FILE
+; FILE NUMBER IS IN [A]
+; ZERO ALL INFORMATION. IF FILE IS OPEN, RAISE ITS DISKS HEAD
+; IF FILE IS SEQUENTIAL OUTPUT, SEND FINAL SECTOR OF DATA
+
+	PUBLIC	CLSFIL
+CLSFIL:	call	FILIDX	; GET POINTER TO DATA
+	jp	z,NTOPNC	; RETURN IF NOT OPEN
+			; SAVE FILE #
+	push	bc	; SAVE FILE POINTER
+	ld	a,(bc)	; GET FILE MODE
+	ld	d,b	; PUT FILE BLOCK OFFSET IN [D,E]
+	ld	e,c
+	inc	de	; POINT TO FCB
+	push	de	; SAVE [D,E] FOR LATER
+	cp	MD.SQO	; SEQENTIAL OUTPUT?
+	jp	nz,NOFORC	; NO NEED TO FORCE PARTIAL OUTPUT BUFFER
+	ld	hl,CLSFL1	; RETURN HERE
+	push	hl	; SAVE ON STACK
+	push	hl	; NEED EXTRA STACK ENTRY
+	ld	h,b	; GET FILE POINTER
+	ld	l,c	; INTO [H,L]
+	ld	a,EOFCHR	; PUT OUT CONTROL-Z (OR FS)
+	jp	FILOU4	; JUMP INTO CHAR OUTPUT CODE
+
+CLSFL1:	ld	hl,0+ORNOFS	; CHARS IN BUFFER
+	add	hl,bc	; TEST
+	ld	a,(hl)	; TEST ORNOFS
+	or	a
+	call	nz,OUTSQ2	; FORCE OUT BUFFER
+
+
+NOFORC:	pop	de	; GET BACK FCB POINTER
+
+;	CLOSE FILE
+;
+;	(DE) points to FCB
+;	((SP)) points to File Data Block
+
+	call	SETBUF	; SET DMA ADDRESS
+	ld	c,C.CLOSE	; THE CLOSE
+	call	CPMENT	; CALL CPM
+;*****	NO CHECK FOR ERRORS
+
+
+
+
+
+	pop	bc	; RESTORE FILE POINTER
+NTOPNC:	ld	d,DATOFS	; NUMBER OF BYTES TO ZERO
+	xor	a
+MORCZR:	ld	(bc),a
+	inc	bc
+	dec	d
+	jp	nz,MORCZR
+	ret
+
+	SUBTTL	LOC (CURRENT LOCATION) AND LOF (LAST RECORD NUMBER)
+
+	PUBLIC	LOC
+LOC:	call	FILFRM	; CONVERT ARGUMENT AND POINT AT DATA BLOCK
+	jp	z,DERBFN	; IF NOT OPEN, "BAD FILE NUMBER"
+	cp	MD.RND	; Random mode?
+	ld	hl,0+LOCOFS+1	; Assume not
+	jp	nz,LOC1	; No, use CURLOC
+	ld	hl,0+FD.LOG+1	; POINT AT LOGICAL RECORD NUMBER
+LOC1:	
+INTRED:	add	hl,bc
+INTRET:	ld	a,(hl)
+	dec	hl
+	ld	l,(hl)
+	jp	GIVINT##
+	PAGE
+	PUBLIC	LOF
+LOF:	call	FILFRM	; CONVERT ARGUMENT AND INDEX
+	jp	z,DERBFN	; "BAD FILE NUMBER" IF NOT OPEN
+
+;	(BC) points to File Data Block
+
+	ld	hl,0+FCB.RC+1	; Point to record number
+	add	hl,bc
+	ld	a,(hl)	; GET RC
+	jp	SNGFLT##	; FLOAT IT
+			; Return with LOF in (HL)
+			; SWLOF
+
+	SUBTTL	FILOUT -- PUT A CHARACTER IN AN OUTPUT BUFFER AND OUTPUT IF NECESSARY
+;
+; CALL AT FILOUT WITH [H,L] TO BE SAVED ON THE STACK
+; AND THE CHARACTER IN THE HIGH ORDER BYTE BELOW THE [H,L]
+; ON THE STACK. THE CURRENT DATA IS OUTPUT IF THERE ARE 128
+; CHARACTER STUFFED INTO THE DATA AREA.
+; FILOUT IS NORMALLY CALLED FROM OUTDO (OUTCHR)
+;
+FILOUT:	pop	hl	; GET SAVED [H,L] OFF STACK
+	pop	af	; GET SAVE CHAR OFF STACK
+FILOU3:	push	hl	; SAVE THE [H,L]
+	push	af	; SAVE THE CHARACTER AGAIN
+	ld	hl,(PTRFIL##)	; GET THE POINTER TO THE FILE
+	ld	a,(hl)	; WHAT IS THE MODE?
+	cp	MD.SQI	; MUST BE ECHOING OR "EXTRA IGNORED"
+			; DURING THE READING OF A FILE
+	jp	z,POPAHT##	; SO IGNORE THIS OUTCHR
+	EXTRN	FILOFV
+	cp	MD.RND	; RANDOM?
+	jp	z,FILOFV	; YES, FINISH UP IN FIVDK.MAC
+	pop	af	; TAKE THE CHARACTER OFF
+FILOU4:	push	de
+	push	bc
+	ld	b,h	; SETUP [B,C] FOR OUTSEQ
+	ld	c,l
+	push	af	; RE-SAVE OUTPUT CHARACTER
+	ld	de,0+ORNOFS	; POINT AT THE NUMBER OF CHARACTERS IN THE
+	add	hl,de	; BUFFER CURRENTLY
+	ld	a,(hl)
+	cp	DATPSC AND 0ffh	; IS THE BUFFER FULL?
+	push	hl	; SAVE POINTER AT CHARACTER COUNT
+	call	z,OUTSEQ	; OUTPUT IF FULL
+	pop	hl	; GET BACK DATA BLOCK POINTER
+	inc	(hl)	; INCREMENT THE NUMBER OF CHARACTERS
+	ld	c,(hl)	; FETCH FOR OFFSET INTO DATA
+	ld	b,0
+	inc	hl	; POINT AT PRINT POSITION
+	PUBLIC	FILUPP
+FILUPP:	
+	pop	af	; GET THE OUTPUT CHARACTER
+	push	af	; RESAVE FOR OUTPUT
+	ld	d,(hl)	; [D]=CURRENT POSITION
+	cp	13	; BACK TO ZERO POSITION WITH RETURN?
+	ld	(hl),b	; ASSUME RESET TO ZERO SINCE [B]=0
+	jp	z,ISCRDS	; ALL DONE UPDATING POSITION
+	add	a,224	; SET CARRY FOR SPACES AND HIGHER
+	ld	a,d	; [A]=CURRENT POSITION
+	adc	a,b	; ADD ON CARRY SINCE [B]=0
+	ld	(hl),a	; UPDATE THE POSITION IN THE DATA BLOCK
+ISCRDS:	add	hl,bc
+	pop	af	; GET THE CHARACTER
+	pop	bc
+	pop	de
+	ld	(hl),a	; SAVE IT IN THE DATA AREA
+	pop	hl	; GET BACK SAVED [H,L]
+	ret
+
+	SUBTTL	PUT AND GET STATEMENTS
+
+;	EXTERN	GET,PUT
+	PUBLIC	FIVDPT
+FIVDPT:	
+	dec	de	; MAP RECORD NUMBER 1=0 LOGICAL
+	dec	hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d	; SETUP CURLOC AGAIN
+	inc	hl	; POINT TO ORN
+	ld	(hl),DATPSC AND 0ffh	; SET NUMBER IN THE BUFFER TO DATSPC
+	inc	hl
+	ld	(hl),DATPSC AND 0ffh
+	pop	hl	; [H,L]=TEXT POINTER
+	ex	(sp),hl		; SAVE TEXT POINTER, [H,L]=START OF DATA BLOCK
+	ld	b,h
+	ld	c,l
+
+;	RANDOM FILE ACCESS
+;
+;	(DE) = physical block #
+;	(BC) points to File Data Block
+;	(HL) points to File Data Block
+
+	push	hl	; SAVE DATA BLOCK POINTER
+	ld	a,(CPMVRN)	; Get version number
+	or	a
+	jp	z,RNDVR1	; Version 1.x
+
+	ld	hl,0+FCB.RN+1	; Offset to random record number
+	add	hl,bc
+	ld	(hl),e	; Set new random record number
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ld	(hl),0
+	jp	RNDDON	; Finished setting record number
+
+RNDVR1:	ld	hl,0+FCB.EX+1	; POINT TO EXTENT
+	add	hl,bc	; ADD START OF FILE CONTROL BLOCK
+	ld	a,e	; GET LOW BYTE OF OFFSET
+	rla		; GET HIGH BIT IN CARRY
+	ld	a,d	; GET HIGH BYTE
+	rla		; ROTATE IN HIGH BYTE OF LOW PART
+	ld	d,(hl)	; PUT ORIGINAL EXTENT IN [D]
+	cp	d	; ARE NEW AND OLD EXTENT THE SAME?
+	jp	z,SAMEXT	; SAME EXTENT, DONT RE-OPEN
+	push	de	; SAVE RECORD NUMBER
+	push	af	; SAVE NEW EXTENT
+	push	hl	; SAVE POINTER TO EXTENT
+	push	bc	; SAVE FILE POINTER
+	ld	de,DIRTMP	; READ DIRECTORY IN HERE FOR OPEN
+	ld	c,C.BUFF	; SET CPM BUFFER ADDRESS
+	call	CPMENT
+	pop	de	; GET CPM FCB POINTER
+	push	de	; SAVE BACK
+	inc	de	; POINT TO FCB
+	ld	c,C.CLOS	; CLOSE PREVIOUS EXTENT (?!)
+	call	CPMENT	; CALL CP/M
+	pop	de	; GET BACK FCB POINTER
+	pop	hl	; RESTORE POINTER TO EXTENT FIELD
+	pop	af	; GET BACK NEW EXTENT
+	ld	(hl),a	; STORE NEW EXTENT
+	push	de
+	inc	de	; POINT TO FCB
+	ld	c,C.OPEN	; OPEN NEW EXTENT
+	push	de	; SAVE EXTENT POINTER
+	call	CPMENT	; BY CALLING CP/M
+	pop	de	; RESTORE FCB POINTER
+	inc	a	; DOES EXTENT EXIST?
+	jp	nz,RNDOK	; YES
+	ld	c,C.MAKE	; MAKE THE EXTENT EXIST
+	call	CPMENT	; CALL CP/M
+	inc	a	; ROOM IN DIRECTORY?
+	jp	z,DERTMF	; NO
+RNDOK:	pop	bc	; RESTORE [B,C]
+	pop	de	; RESTORE RECORD NUMBER
+SAMEXT:	ld	hl,0+FCB.NR+1	; NEXT RECORD FIELD
+	add	hl,bc	; POINT TO IT
+	ld	a,e	; GET LOW 7 BITS OF RECORD #
+	and	127
+	ld	(hl),a	; SET RECORD #
+
+RNDDON:	
+	pop	hl	; [H,L] POINT AT FILE DATA BLOCK
+
+;	(BC) points to File Data Block
+;	(HL) points to File Data Block
+
+	ld	a,(MAXTRK##)	; GET FLAG FOR "PUT" OR "GET"
+	or	a
+	jp	nz,PUTFIN	; DO THE PUTTING
+	call	READIN	; PERFORM THE GET
+	pop	hl	; GET THE TEXT POINTER
+	ret
+
+PUTFIN:	
+	ld	hl,0+FCB.NR+1	; LOOK AT RECORD #
+	add	hl,bc	; [H,L] POINTS TO IT
+	ld	a,(hl)	; GET IT
+	cp	127	; LAST RECORD IN EXTENT?
+	push	af	; SAVE INDICATOR
+	ld	de,DIRTMP	; SAVE HERE
+	ld	hl,0+DATOFS	; POINT TO DATA
+	add	hl,bc
+	push	de	; SAVE DIRTMP POINTER
+	push	hl	; SAVE DATA POINTER
+	call	z,BUFMOV	; NOT LAST EXTENT
+	call	OUTSEQ	; OUTPUT THE DATA
+	pop	de	; RESTORE DATA POINTER
+	pop	hl	; RESTORE POINTER TO DIRTMP
+	pop	af	; RESTORE INDICATOR
+	call	z,BUFMOV	; MOVE SECTOR
+	pop	hl	; GET THE TEXT POINTER
+	jp	FINPRT##	; ZERO PTRFIL
+
+BUFMOV:	push	bc	; SAVE [B,C]
+	ld	b,DATPSC	; # OF BYTES TO MOVE
+BUFSLP:	ld	a,(hl)	; GET BYTE FROM BUFFER
+	inc	hl	; BUMP POINTER
+	ld	(de),a	; SAVE IN DIRTMP
+	inc	de	; BUMP POINTER
+	dec	b
+	jp	nz,BUFSLP	; KEEP MOVING BYTES
+	pop	bc	; RESTORE [B,C]
+	ret
+
+	SUBTTL	INDSKC, FILLSQ, AND READIN -- FOR READING CHARACTERS AND BUFFERS
+
+;
+; GET A CHARACTER FROM A SEQUENTIAL FILE IN [PTRFIL]
+; ALL REGISTERS EXCEPT [D,E] SMASHED
+;
+;	'C' set if EOF read
+;
+INDSKB:	push	bc	; SAVE CHAR COUNTER
+	push	hl	; SAVE [H,L]
+INDSK3:	ld	hl,(PTRFIL##)	; GET DATA BLOCK POINTER
+	EXTRN	FILIFV
+	ld	a,(hl)	; GET FILE MODE
+	cp	MD.RND	; RANDOM?
+	jp	z,FILIFV	; DO INPUT
+	ld	bc,0+NMLOFS	; SEE HOW MANY CHARACTERS LEFT
+	add	hl,bc
+	ld	a,(hl)	; GET THE NUMBER
+	or	a
+	jp	z,FILLSQ	; MUST GO READ SOME MORE -- IF CAN
+	dec	hl	; POINT AT ORNOFS
+	ld	a,(hl)	; GET ORIGINAL NUMBER
+	inc	hl	; POINT AT NUMBER LEFT AGAIN
+	dec	(hl)	; DECREMENT THE NUMBER
+	sub	(hl)	; SUBTRACT TO GIVE OFFSET
+	ld	c,a	; [C]=OFFSET
+	add	hl,bc
+	ld	a,(hl)	; GET THE DATA
+	or	a	; RESET CARRY FLAG FOR NO EOF
+	pop	hl	; RESTORE [H,L]
+POPBRT:	pop	bc	; RESTORE
+	ret
+
+FILLSQ:	dec	hl	; BACK UP POINTER
+	ld	a,(hl)	; TO ORNOFS
+	or	a	; DID WE HIT EOF ON PREVIOUS READ?
+	jp	z,FILLS1	; YES
+	call	READ2	; READ A RECORD
+;	ORA	A		;USED TO BE - WAS IT EOF?
+	jp	nz,INDSK3	; RETURN WITH A CHAR
+FILLS1:	scf		; CARRY IS EOF FLAG
+	pop	hl	; RESTORE [H,L]
+	pop	bc	; EOF DETECTED
+	ld	a,EOFCHR	; RETURN WITH CHAR=CONTROL-Z (OR =FS)
+	ret
+
+READ2:	ld	hl,(PTRFIL##)	; GET DATA POINTER
+READIN:	push	de
+	ld	d,h	; PUT FCB POINTER IN [D,E]
+	ld	e,l
+	inc	de
+	ld	bc,0+LOCOFS	; POINT TO CURLOC
+	add	hl,bc
+	ld	c,(hl)	; UPDATE [CURLOC]
+	inc	hl
+	ld	b,(hl)
+	inc	bc
+	dec	hl
+	ld	(hl),c
+	inc	hl
+	ld	(hl),b
+	inc	hl	; POINT TO NUMBER READ
+	inc	hl	; POINT TO NMLOFS
+	push	hl	; SAVE [H,L]
+; ZERO OUT THE BUFFER IN CASE NOTHING READ
+	ld	c,DATPSC	; NUMBER OF BYTES/BUFFER
+ZRRND:	inc	hl	; INCREMENT BUFFER POINTER
+	ld	(hl),0	; ZERO IT
+	dec	c	; DECREMENT COUNT
+	jp	nz,ZRRND	; KEEP ZEROING
+
+;	READ SPECIFIED RECORD IN FILE
+;
+;	(DE) points to FCB
+;
+;	If SW2BYT = 0,
+;		(A) = number of bytes read
+;	If SW2BYT = 1,
+;		(DE) = number of bytes read
+;
+;	If EOF, return with (A) or (DE) zero and
+;		jump to READI2
+;
+;	Returns 'Z' set if EOF
+
+	call	SETBUF	; SET CPM BUFFER ADDRESS
+	ld	a,(CPMREA)	; Get read code
+	call	ACCFIL	; Access file
+	or	a	; EOF?
+	ld	a,0	; Return 0 if EOF
+	jp	nz,READI2	; Assume EOF if error
+READI1:	ld	a,DATPSC	; OTHERWISE, HAVE 128 BYTES
+READI2:	pop	hl	; POINT BACK TO # READ
+	ld	(hl),a	; STORE NUMBER READ
+	dec	hl	; POINT AT NUMBER ORIGINALLY
+	ld	(hl),a	; STORE NUMBER READ
+	or	a	; Test for EOF
+	pop	de	; GET [D,E] BACK
+	ret
+
+SETBUF:	push	bc	; SAVE [B,C]
+	push	de	; SAVE [D,E]
+	push	hl	; SAVE [H,L]
+	ld	hl,0+DATOFS-1	; POINT TO BUFFER
+	add	hl,de	; ADD
+	ex	de,hl		; PUT BUFFER ADDRESS IN [D,E]
+	ld	c,C.BUFF	; SET UP BUFFER ADDRESS
+	call	CPMENT	; CALL CPM
+	pop	hl	; RESTORE [H,L]
+	pop	de	; RESTORE [D,E]
+	pop	bc	; RESTORE [B,C]
+	ret
+
+;
+INDSKC:	
+	call	INDSKB	; GET CHAR
+	ret	c		; IF EOF, RETURN WITH END OF FILE CHARACTER
+	cp	EOFCHR	; WAS IT A CONTROL-Z (OR FS)?
+	scf		; SET CARRY
+	ccf		; MAKE SURE CARRY RESET
+	ret	nz		; NO
+	push	bc	; SAVE [B,C]
+	push	hl	; SAVE [H,L]
+	ld	hl,(PTRFIL)	; GET POINTER TO FILE DATA BLOCK
+	ld	bc,0+ORNOFS	; POINT TO NUMBER ORIGINALLY IN BUFFER
+	add	hl,bc
+	ld	(hl),0	; FORCE IT TO ZERO
+	inc	hl	; POINT TO NUMBER IN BUFFER
+	ld	(hl),0	; FORCE TO ZERO.
+	scf		; SET EOF FLAG
+	pop	hl	; RESTORE [H,L]
+	pop	bc	; RESTORE [B,C]
+	ret
+
+
+	SUBTTL	NAMFIL -- SCAN A FILE NAME AND NAME COMMAND
+
+NAMFIL:	call	FRMEVL##	; EVALUATE STRING
+	push	hl	; SAVE TEXT POINTER
+	call	FRESTR##	; FREE UP THE TEMP
+	ld	a,(hl)	; GET LENGTH OF STRING
+	or	a	; NULL STRING?
+	jp	z,DERNMF	; YES, ERROR
+	push	af	; NO "." SEEN
+	inc	hl	; PICK UP POINTER TO STRING
+	ld	e,(hl)	; BY GETTING ADDRESS
+	inc	hl	; OUT OF DESCRIPTOR
+	ld	h,(hl)
+	ld	l,e	; [H,L] POINTS TO STRING
+	ld	e,a	; SAVE LENGTH
+
+;	(HL) points to filename
+;	(A) = length
+;	(E) = length
+;	((SP)) = no carry
+
+	cp	2	; CAN THERE BE A DEVICE?
+	jp	c,NODEV	; NO, NAME TOO SHORT
+	ld	c,(hl)	; [C]=POSSIBLE DEVICE NAME
+	inc	hl	; POINT TO NEXT CHAR
+	ld	a,(hl)	; GET IT
+	dec	e	; DECREMENT COUNT FOR DEVICE NAME
+	cp	':'	; COLON FOR DEVICE NAME?
+	jp	z,CHKFIL	; YES, SO NOW GET FILE NAME
+	dec	hl	; BACK UP POINTER BY ONE
+	inc	e	; COMPENSATE FOR DCR
+NODEV:	dec	hl	; BACK UP POINTER
+	inc	e	; INCREMENT CHAR COUNT TO COMPENSATE FOR NEXT DECR
+	ld	c,'A'-1	; USE CURRENTLY SELECTED DRIVE
+CHKFIL:	dec	e	; DECRMENT CHAR COUNT
+	jp	z,DERNMF	; ERROR IF NO FILENAME
+	ld	a,c	; GET DRIVE #
+	sub	'A'-1	; CONVERT TO LOGICAL NUMBER
+	jp	c,DERNMF	; NOT IN RANGE
+	cp	27	; BIGGER THAN 27
+	jp	nc,DERNMF	; NOT ALLOWED
+	ld	bc,FILNAM	; WHERE TO PUT NAME
+	ld	(bc),a	; STORE DISK # IN FCB
+	inc	bc	; POINT TO WHERE FIRST CHAR OF FILE NAME IS STORED
+	ld	d,11-2*0	; LENGTH OF NAME
+FILINX:	inc	hl	; BUMP POINTER
+FILLOP:	dec	e	; END OF STRING
+	jp	m,FILSPC	; YES, FILL REST OF FIELD WITH BLANKS
+	ld	a,(hl)	; GET CHAR
+	cp	'.'	; EXTENSION?
+	jp	nz,FILLO1	; NO
+FILLO0:	call	FILLNM	; YES, FILL NAME WITH BLANKS
+	pop	af	; RESTORE CC'S
+	scf		; FLAG "." SEEN
+	push	af	; SAVE CC'S BACK
+	jp	FILINX	; YES, IGNORE "."
+FILLO1:	
+	ld	(bc),a	; COPY CHAR
+	inc	bc
+	inc	hl
+	dec	d	; DECRMENT POSSIBLE COUNT OF CHARS
+	jp	nz,FILLOP
+GOTNAM:	
+	xor	a	; CLEAR EXTENT FIELD
+	ld	(FILNAM+12),a
+	pop	af	; RESTORE CONDITION CODES
+	pop	hl	; GET BACK TEXT POINTER
+	ret
+
+FILLNM:	ld	a,d	; GET # OF CHARS
+	cp	11+8*0-2*0	; INITIAL POSITION?
+	jp	z,DERNMF	; DONT ALLOW NULL FILENAME
+	cp	3	; FILLED FIELD?
+	jp	c,DERNMF	; NO, BUT 2ND "."
+	ret	z		; YES, BACK TO LOOP
+FILLN1:	ld	a,' '	; FILL WITH SPACE
+	ld	(bc),a
+	inc	bc
+	dec	d
+	jp	FILLNM
+FILSPC:	inc	d	; CHARS LEFT IN FILE BUFFER
+	dec	d	; TEST
+	jp	z,GOTNAM	; NO
+FILSP2:	ld	a,' '	; SPACE
+	ld	(bc),a	; STORE
+	inc	bc
+	dec	d	; FILLED WHOLE FIELD?
+	jp	nz,FILSP2	; NO, MORE SPACES
+	jp	GOTNAM	; YES, MAKE SURE NAME OK
+	PAGE
+NAME::	
+	call	NAMFIL	; PICK UP THE OLD NAME TO USE
+	push	hl	; SAVE THE TEXT POINTER
+	ld	de,DIRTMP	; READ DIRECTORY IN HERE
+	ld	c,C.BUFF	; SET BUFFER ADDRESS
+	call	CPMENT	; CALL CP/M
+	ld	de,FILNAM	; SEE IF ORIGINAL NAME EXISTS
+	ld	c,C.OPEN	; BY OPENING
+	call	CPMENT	; CALL CP/M
+	inc	a	; DOES IT EXIST?
+	jp	z,DERFNF	; FILE NOT FOUND
+	ld	hl,FILNA2	; SAVE FILE NAME IN FILNA2
+	ld	de,FILNAM
+	ld	b,12+3*0-2*0+2*0+3*0-3*0;SET [C]=MAX FILE NAME LENGTH
+NAMRMV:	ld	a,(de)	; GET BYTE FROM FILE
+	ld	(hl),a	; SAVE BYTE IN "OLD" FILE NAME
+	inc	hl	; BUMP POINTERS
+	inc	de
+	dec	b
+	jp	nz,NAMRMV
+	pop	hl	; GET THE TEXT POINTER BACK
+	call	SYNCHR
+	defb	'A'	; MAKE SURE "AS" IS THERE
+	call	SYNCHR
+	defb	'S'
+	call	NAMFIL	; READ THE NEW NAME
+	push	hl	; SAVE THE TEXT POINTER
+	ld	a,(FILNAM)	; GET DISK # OF FILE NAME
+	ld	hl,FILNA2	; POINT TO ORIG FILE
+	cp	(hl)	; COMPARE
+	jp	nz,FCERR##	; DISKS MUST BE THE SAME
+	ld	de,FILNAM	; SEE IF ORIGINAL NAME EXISTS
+	ld	c,C.OPEN	; BY OPENING
+	call	CPMENT	; CALL CP/M
+	inc	a	; DOES IT EXIST?
+	EXTRN	DERFAE
+	jp	nz,DERFAE	; YES
+	ld	c,C.RENA	; RENAME OPERATION
+	ld	de,FILNA2	; POINT AT OLD NAME FCB
+	call	CPMENT	; CALL CPM
+;	INR	A		;FILE FOUND?
+;****DONT CHECK ERROR RETURN, CP/M HAS PROBLEMS****
+;	JZ	DERFNF		;NO
+	pop	hl	; RESTORE TEXT POINTER
+	ret
+
+
+
+	SUBTTL	OPEN STATEMENT AND ALL DIRECTORY HANDLING
+
+OPEN::		; ZERO PTRFIL WHEN DONE
+	push	bc
+	call	FRMEVL	; READ THE FILE MODE
+	push	hl	; SAVE THE TEXT POINTER
+	call	FRESTR	; FREE STRING TEMP & CHECK STRING
+	ld	a,(hl)	; MAKE SURE ITS NOT A NULL STRING
+	or	a
+	jp	z,DERBFM	; IF SO, "BAD FILE MODE"
+	inc	hl
+	ld	c,(hl)	; [B,C] POINT AT MODE CHARACTER
+	inc	hl
+	ld	b,(hl)
+	ld	a,(bc)	; [A]=MODE CHARACTER
+	and	-1-' '	; FORCE TO UPPER CASE
+	ld	d,MD.SQO	; ASSUME ITS "O"
+	cp	'O'	; IS IT?
+	jp	z,HAVMOD	; [D] HAS CORRECT MODE
+	ld	d,MD.SQI	; ASSUME SEQUENTIAL
+	cp	'I'	; IS IT?
+	jp	z,HAVMOD	; [D] SAYS SEQUENTIAL INPUT
+	ld	d,MD.RND	; MUST BE RANDOM
+	cp	'R'
+	jp	nz,DERBFM	; IF NOT, NO MATCH SO "BAD FILE MODE"
+HAVMOD:	pop	hl	; GET BACK THE TEXT POINTER
+	call	SYNCHR
+	defb	44	; SKIP COMMA BEFORE FILE NUMBER
+	push	de	; SAVE THE FILE MODE
+	cp	'#'	; SKIP A POSSIBLE "#"
+	call	z,CHRGTR##
+	call	GETBYT	; READ THE FILE NUMBER
+	call	SYNCHR
+	defb	44	; SKIP COMMA BEFORE NAME
+	ld	a,e	; [A]=FILE NUMBER
+	or	a	; MAKE SURE FILE WASN'T ZERO
+	jp	z,DERBFN	; IF SO, "BAD FILE NUMBER"
+	pop	de	; GET BACK FILE MODE
+PRGFIL:	ld	e,a	; SAVE FILE NUMBER IN [E]
+	push	de	; SAVE THE MODE IN [D]
+			; SINCE PROGRAM FILE [A]=0
+	call	FILIDX	; [B,C] POINT AT FILE DATA BLOCK
+	jp	nz,DERFAO	; IF NON ZERO MODE, "FILE ALREADY OPEN"
+	pop	de	; [D]=FILE MODE
+	ld	a,d	; FILE MODE TO [A]
+	ld	(bc),a	; SAVE IN FILE BLOCK
+	push	bc	; SAVE POINTER AT FILE DATA BLOCK
+	push	de	; SAVE BACK FILE MODE AND NUMBER
+	call	NAMFIL	; READ THE NAME
+	pop	de	; RESTORE FILE NUMBER
+	pop	bc	; GET BACK FILE DATA BLOCK POINTER
+	push	bc	; SAVE BACK
+	EXTRN	VARECS
+	push	af	; SAVE EXTENSION FLAG
+	ld	a,(bc)	; GET FILE MODE
+	call	VARECS	; SCAN RECORD LENGTH FIELD
+	pop	af	; GET BACK EXTENSION FLAG
+	EXTRN	TEMP
+	ld	(TEMP),hl	; SAVE THE TEXT POINTER FOR A WHILE
+	jp	c,PRGDOT	; IF "." SEEN, DONT DEFAULT EXTENSION
+	ld	a,e	; GET FILE NUMBER
+	or	a	; SET CONDITION CODES
+	jp	nz,PRGDOT	; NOT FILE 0, DONT DEFAULT FILE NAME
+	ld	hl,FILNAM+9-0-0-2*0	; POINT TO FIRST CHAR OF EXTENSION
+	ld	a,(hl)	; GET IT
+	cp	' '	; BLANK EXTENSION
+	jp	nz,PRGDOT	; NON-BLANK EXTENSION, DONT USE DEFAULT
+	ld	(hl),'B'	; SET DEFAULT EXTENSION
+	inc	hl
+	ld	(hl),'A'
+	inc	hl
+	ld	(hl),'S'	; SET ".BAS"
+			; BASCOM
+PRGDOT:	pop	hl	; [H,L]=POINTER AT FILE DATA BLOCK
+	ld	(PTRFIL##),hl	; SETUP AS CURRENT FILE
+	push	hl	; SAVE BACK FILE DATA BLOCK POINTER
+	inc	hl	; POINT TO FCB ENTRY
+	ld	de,FILNAM	; GET POINTER TO SCANNED FILE NAME
+	ld	c,12+0+0*3+2*0+3*0	; NUMBER OF BYTES TO COPY
+OPNLP:	ld	a,(de)	; GET BYTE FROM FILNAM
+	ld	(hl),a	; STORE IN FILE DATA BLOCK
+	inc	de
+	inc	hl
+	dec	c	; DECRMENT COUNT OF BYTES TO MOVE
+	jp	nz,OPNLP	; KEEP LOOPING
+
+;	OPEN FILE
+;
+;	((SP)) points to File Data Block
+;	((SP)+2) contains the file mode - DMC!X3200!R2E
+
+	ld	(hl),0	; MAKE SURE EXTENT FIELD IS ZERO
+	ld	de,0+20	; POINT TO NR FIELD
+	add	hl,de
+	ld	(hl),0	; SET TO ZERO
+	pop	de	; GET POINTER TO FILE DATA BLOCK BACK IN [D]
+	push	de	; SAVE AGAIN FOR LATER
+	inc	de
+	call	SETBUF	; SET BUFFER ADDRESS
+	pop	hl	; GET BACK FILE DATA BLOCK PTR
+	push	hl	; SAVE BACK
+	ld	a,(hl)	; GET MODE
+	cp	MD.SQO	; SEQENTIAL OUTPUT?
+	jp	nz,OPNFIL	; NO, DO CPM OPEN CALL
+	push	de	; SAVE FCB POINTER
+	ld	c,C.DELE	; DELETE EXISTING OUTPUT FILE, IF ANY
+	call	CPMENT	; CALL CP/M
+	pop	de	; RESTORE FCB POINTER
+MAKFIL:	ld	c,C.MAKE	; CREATE FILE
+	call	CPMENT	; CALL CPM
+	inc	a	; TEST FOR TOO MANY FILES
+	jp	z,DERTMF	; THAT WAS THE CASE
+	jp	OPNSET	; FINISH SETUP OF FILE DATA BLOCK
+OPNFIL:	ld	c,C.OPEN	; CPM CODE FOR OPEN
+	call	CPMENT	; CALL CPM
+	inc	a	; FILE NOT FOUND
+	jp	nz,OPNSET	; FOUND
+	pop	de	; GET BACK FILE POINTER
+	push	de	; SAVE BACK
+	ld	a,(de)	; GET MODE OF FILE
+	cp	MD.RND	; RANDOM?
+	jp	nz,DERFNF	; NO, SEQENTIAL INPUT, FILE NOT FOUND
+	inc	de	; MAKE [D,E]=FCB POINTER
+	jp	MAKFIL	; MAKE FILE
+
+;	((SP)) points to File Data Block
+;	((SP)+2) contains the file mode - DMC!X3200!R2E
+
+OPNSET:	pop	de	; POINT TO FILE INFO
+	push	de	; SAVE POINTER BACK
+	ld	hl,0+LOCOFS	; POINT TO CURLOC
+	add	hl,de
+	xor	a	; ZERO CURLOC IN CASE THIS FILE
+			; WAS JUST KILLED
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a	; ZERO NUMBER OF BYTES IN THE BUFFER
+	inc	hl
+	ld	(hl),a	; ZERO PRINT POSITION
+	pop	hl	; GET POINTER AT MODE
+	ld	a,(hl)	; SEE WHAT HAS TO BE DONE
+	cp	MD.RND	; IS IT RANDOM MODE?
+	jp	z,RNDFIN	; YES RANDOM FINISH UP
+	cp	MD.SQI	; IF SEQUENTIAL ALL THAT IS LEFT TO DO
+	jp	nz,GTMPRT##	; FETCH TEXT POINTER AND DONE
+
+;
+; FINISH UP SEQUENTIAL INPUT AFTER FINDING FILE
+;
+	call	READ2	; READ FIRST DATA BLOCK
+OPN000:	
+	ld	hl,(TEMP)	; GET BACK THE TEXT POINTER
+	ret
+
+RNDFIN:	ld	bc,0+DATOFS	; NOW ADVANCE POINTER TO DATA
+	add	hl,bc	; BY ADDING PROPER OFFSET
+	ld	c,DATPSC	; # OF BYTES TO ZERO
+ZRRNDT:	ld	(hl),b
+	inc	hl
+	dec	c
+	jp	nz,ZRRNDT
+	jp	GTMPRT	; GET TEXT POINTER
+
+	SUBTTL	SYSTEM (EXIT) COMMAND - RETURN TO CPM (OR EXIT TO OS)
+
+	PUBLIC	SYSTEM
+	PUBLIC	SYSTME
+SYSTEM:	
+	ret	nz		; SHOULD TERMINATE
+	call	CLSALL	; CLOSE ALL DATA FILES
+SYSTME:	jp	CPMWRM	; WARM START CP/M
+			; BASCOM
+
+	SUBTTL	RESET COMMAND - FORCE DIRECTORY RE-READ ON ALL DISKS
+
+	PUBLIC	RESET
+RESET:	ret	nz		; SHOULD TERMINATE
+	push	hl	; SAVE TEXT POINTER
+	call	CLSALL	; CLOSE ALL FILES
+	ld	c,C.GDRV	; GET DRIVE CURRENTLY SELECTED
+	call	CPMENT	; GET IT IN [A]
+	push	af	; SAVE CURRENT DRIVE #
+	ld	c,C.REST	; DO THE RESET CALL
+	call	CPMENT
+	pop	af	; GET DRIVE TO SELECT
+	ld	e,a	; INTO [E]
+	ld	c,C.SDRV	; SET DRIVE
+	call	CPMENT	; CALL CPM
+	pop	hl	; RESTORE TEXT POINTER
+	ret
+
+	SUBTTL	Kill command
+
+KILL::	
+	call	NAMFIL	; SCAN FILE NAME
+	push	hl	; SAVE TEXT POINTER
+	ld	de,DIRTMP	; READ DIRECTORY IN HERE
+	ld	c,C.BUFF	; SET BUFFER ADDRESS
+	call	CPMENT	; FOR CP/M
+	ld	de,FILNAM	; TRY TO OPEN FILE
+	push	de	; SAVE FCB POINTER
+	ld	c,C.OPEN
+	call	CPMENT
+	inc	a	; FILE FOUND?
+	pop	de	; GET BACK POINTER TO FCB
+	push	de	; SAVE BACK
+	push	af	; SAVE FOUND FLAG
+	ld	c,C.CLOS	; THIS MAY NOT BE NESC.
+	call	nz,CPMENT	; CLOSE FILE
+	pop	af	; RESTORE FOUND INDICATOR
+	pop	de	; RESTORE FCB POINTER
+	jp	z,DERFNF	; YES
+	ld	c,C.DELE	; CODE FOR DELETE
+	call	CPMENT	; CALL CPM
+	pop	hl	; GET BACK TEXT POINTER
+	ret
+
+	SUBTTL	FILES COMMAND - LIST THE DIRECTORY
+
+; THIS IS THE FILES[<FILENAME>] COMMAND
+; WHICH PRINTS THE FILES WHICH MATCH THE <FILENAME> WILDCARD SPECIFIER
+; IF <FILENAME> IS OMITTED, ALL THE FILES ON THE CURRENTLY SELECTED DRIVE
+; ARE LISTED
+	PUBLIC	FILES
+FILES:	
+	jp	nz,FILNB	; FILE NAME WAS SPECIFIED
+	push	hl	; SAVE TEXT POINTER
+	ld	hl,FILNAM	; POINT TO FILE NAME
+	ld	(hl),0	; SET CURRENT DRIVE
+	inc	hl	; BUMP POINTER
+	ld	c,11+8*0	; MATCH ALL FILES
+	call	FILQST	; SET FILE NAME AND EXTENSION TO QUESTION MARKS
+	pop	hl	; RESTORE TEXT POINTER
+FILNB:	call	nz,NAMFIL	; SCAN FILE NAME
+	xor	a	; MAKE SURE EXTENT IS ZERO
+	ld	(FILNAM+12),a
+	push	hl	; SAVE TEXT POINTER
+	ld	hl,FILNAM+1	; GET FIRST CHAR OF FILE NAME
+	ld	c,8	; FILL NAME WITH QUESTION MARKS
+	call	FILQS
+	ld	hl,FILNAM+9	; POINT TO EXTENSION
+	ld	c,3	; 3 CHARS IN EXTENSION
+	call	FILQS	; FILL IT WITH QMARKS
+	ld	de,DIRTMP	; SET BUFFER TO 80 HEX
+	ld	c,C.BUFF
+	call	CPMENT
+	ld	de,FILNAM	; POINT TO FCB
+	ld	c,C.SEAR	; DO INITIAL SEARCH FOR FILE
+	call	CPMENT	; CALL CP/M
+	cp	255	; FIND FIRST INCARNATION OF FILE
+	jp	z,DERFNF	; NO
+FILNXT:	and	3	; MASK OFF LOW TWO BITS
+	add	a,a	; MULTIPLY BY 32
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	ld	c,a	; PUT OFFSET IN [B,C]
+	ld	b,0
+	ld	hl,DIRTMP+1	; POINT TO DIRECTORY BUFFER
+	add	hl,bc	; POINT TO FCB ENTRY IN DIRECTORY
+	ld	c,11+5*0+11*0	; CHARS IN NAME
+MORNAM:	ld	a,(hl)	; GET FILE NAME CHAR
+	inc	hl	; BUMP POINTER
+	call	OUTDO	; PRINT IT
+	ld	a,c	; GET CHAR POSIT
+	cp	4+5*0	; ABOUT TO PRINT EXTENSION?
+	jp	nz,NOTEXT	; NO
+	ld	a,(hl)	; GET FIRST CHAR OF EXTENSION
+	cp	' '	; IF SO, NOT SPACE
+	jp	z,PRISPA	; PRINT SPACE
+	ld	a,'.'	; PRINT DOT
+PRISPA:	call	OUTDO
+NOTEXT:	dec	c	; DECREMENT CHAR COUNT
+	jp	nz,MORNAM	; MORE OF NAME TO PRINT
+	ld	a,(TTYPOS##)	; GET CURRENT TTY POSIT
+	add	a,13+6*0+9*0+2*0	; SPACE FOR NEXT NAME?
+	ld	d,a	; SAVE IN D
+	ld	a,(LINLEN##)	; GET LENGTH OF TERMINAL LINE
+	cp	d	; COMPRE TO CURRENT POSIT
+	jp	c,NWFILN	; NEED TO FORCE CRLF
+	ld	a,' '	; TWO SPACES BETWEEN FILE NAMES
+	call	OUTDO
+	call	OUTDO
+			; OR THREE
+NWFILN:	
+	call	c,CRDO	; TYPE CRLF
+	ld	de,FILNAM	; POINT AT FCB
+	ld	c,C.SEAR+1	; SEARCH FOR NEXT ENTRY
+	call	CPMENT	; SEARCH FOR NEXT INCARNATION
+	cp	255	; NO MORE?
+	jp	nz,FILNXT	; MORE.
+NWFIL2:	
+	pop	hl	; RESTORE TEXT POINTER
+	ret
+
+FILQS:	ld	a,(hl)	; GET CHAR
+	cp	'*'	; WILD CARD?
+	ret	nz		; NO, RETURN
+FILQST:	ld	(hl),'?'	; STORE QUESTION MARK
+	inc	hl	; BUMP POINTER
+	dec	c	; DECREMENT COUNT OF QMARKS
+	jp	nz,FILQST	; KEEP SAVING QMARKS
+	ret
+			; Final cr/lf
+			; SWFIL
+
+	SUBTTL	DSKF FUNCTION
+
+
+	SUBTTL	Miscellaneous Operating System I/O
+
+ACCFIL:	push	de	; Save FCB address
+	ld	c,a
+	push	bc
+	call	CPMENT
+	pop	bc
+	pop	de
+	push	af
+	ld	hl,0+FCB.RN	; Point to random record number
+	add	hl,de
+	inc	(hl)
+	jp	nz,ACCFL1
+	inc	hl
+	inc	(hl)
+	jp	nz,ACCFL1
+	inc	hl
+	inc	(hl)
+ACCFL1:	ld	a,c	; Get back CPM call code
+	cp	34	; Is it random write/
+	jp	nz,ACCFL2	; NO
+
+	pop	af	; Get error code and map into 1.4 errors
+	or	a
+	ret	z
+	cp	5
+	jp	z,DERTMF	; Too many files
+	cp	3
+	ld	a,1	; Turn into I/O error
+	ret	z
+	inc	a	; DEFAULT TO DISK SPACE FULL (2)
+	ret
+
+ACCFL2:	pop	af
+	ret
+
+
+
+	SUBTTL	BASCOM O.S. Dependent Data Areas
+
+
+	end
+
+

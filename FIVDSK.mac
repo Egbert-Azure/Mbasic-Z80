@@ -1,0 +1,597 @@
+	.symlen 6
+	SUBTTL	Common file for BASIC interpreter
+	.SALL
+
+CONTO	defl 15	; CHARACTER TO SUPRESS OUTPUT (USUALLY CONTROL-O)
+DBLTRN	defl 0	; FOR DOUBLE PRECISION TRANSCENDENTALS
+	IF2
+
+	.printx	/EXTENDED/
+
+
+	.printx	/LPT/
+
+	.printx	/CPM DISK/
+
+
+	.printx	/Z80/
+
+	.printx	/FAST/
+
+	.printx	/5.0 FEATURES/
+
+	.printx	/ANSI COMPATIBLE/
+	ENDIF
+
+CLMWID	defl 14	; MAKE COMMA COLUMNS FOURTEEN CHARACTERS
+DATPSC	defl 128	; NUMBER OF DATA BYTES IN DISK SECTOR
+LINLN	defl 80	; TERMINAL LINE LENGTH
+LPTLEN	defl 132
+BUFLEN	defl 255	; LONG LINES
+NAMLEN	defl 40	; MAXIMUM LENGTH NAME -- 3 TO 127
+
+NUMLEV	defl 0*20+19+2*5	; NUMBER OF STACK LEVELS RESERVED
+			; BY AN EXPLICIT CALL TO GETSTK
+
+STRSIZ	defl 4
+
+STRSIZ	defl 3
+NUMTMP	defl 3	; NUMBER OF STRING TEMPORARIES
+
+NUMTMP	defl 10
+
+MD.RND	defl 3	; THE MODE NUMBER FOR RANDOM FILES
+MD.SQI	defl 1	; THE MODE NUMBER FOR SEQUENTIAL INPUT FILES
+			; NEVER WRITTEN INTO A FILE
+MD.SQO	defl 2	; THE MODE FOR SEQUENTIAL OUTPUT FILES
+			; AND PROGRAM FILES
+CPMWRM	defl 0	; CP/M WARM BOOT ADDR
+CPMENT	defl CPMWRM+5	; CP/M BDOS CALL ADDR
+	CSEG
+TRUROM	defl 0
+	PAGE
+	TITLE	FIVDSK 5.0 Features - Variable length records, Protected files /P. Allen
+	.SALL
+
+	EXTRN	DCOMPR
+	EXTRN	CHRGTR,SYNCHR
+;
+;The 5.0 Disk code is essentially an extra level of buffering
+;for random disk I/O files. Sequential I/O is not
+;affected by the 5.0 code. Great care has been taken to
+;insure compatibility with existing code to support diverse
+;operating systems. The 5.0 disk code has its
+;own data structure for handling the variable length
+;records in random files. This data structure sits right after
+;the regular data block for the file and consumes an amount of 
+;memory equal to  MAXREC (The maximum allowed record size) plus
+;9 bytes.
+;
+;Here is the content of the data block:
+;
+;FD.SIZ size 2			;Variable length record size default 128
+;FD.PHY size 2			;Current physical record #
+;FD.LOG size 2			;Current logical record number
+;FD.CHG size 1			;Future flag for accross block PRINTs etc.
+;FD.OPS size 2			;Output print position for PRINT, INPUT, WRITE
+;FD.DAT size FD.ZSIZ		;Actual FIELD data buffer
+;				;Size is FD.SIZ bytes long
+;
+;DATE				FIX
+;----				---
+;8/6/179				Make PUT, GET increment LOC correctly
+;8/14/1979			PUUut in BASIC COCOcompiler switch (main source)
+;%
+	EXTRN	DATOFS,DERBFM,DERBRN,FCERR,MAXTRK,FIVDPT,LOCOFS
+	EXTRN	FD.SIZ,FD.PHY,FD.LOG,FD.CHG,FD.OPS,FD.DAT
+	EXTRN	DERFOV,NMLOFS
+	EXTRN	FILSCN,PROFLG,CURLIN,SINCON,ATNCON,GTMPRT
+	EXTRN	TEMP,TXTTAB,VARTAB,SNERR,MAXREC
+	PAGE
+	SUBTTL	VARECS - Variable record scan for OPEN
+	PUBLIC	VARECS,TEMPB,FILOFV,FILIFV,CMPFBC
+
+;	Enter VARECS with file mode in [A]
+
+VARECS:	cp	MD.RND	; Random?
+	ret	nz		; No, give error later if he gave record length
+	dec	hl	; Back up pointer
+	call	CHRGTR	; Test for eol
+	push	de	; Save [D,E]
+	ld	de,0+DATPSC	; Assume record length=DATPSC
+	jp	z,NOTSEP	; No other params for OPEN
+	push	bc	; Save file data block pointer
+	EXTRN	INTIDX
+	call	INTIDX	; Get record length
+	pop	bc	; Get back file data block
+NOTSEP:	push	hl	; Save text pointer
+	ld	hl,(MAXREC)	; Is size ok?
+	call	DCOMPR
+	jp	c,FCERR	; No, give error
+	ld	hl,0+FD.SIZ	; Stuff into data block
+	add	hl,bc
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	xor	a	; Clear other bytes in data block
+	ld	e,7	; # of bytes to clear
+ZOFIVB:	inc	hl	; Increment pointer
+	ld	(hl),a	; Clear byte
+	dec	e	; Count down
+	jp	nz,ZOFIVB	; Go back for more
+	pop	hl	; Text pointer
+	pop	de	; Restore [D,E]
+	ret
+	PAGE
+	SUBTTL	PUT AND GET STATEMENTS
+
+	PUBLIC	GET,PUT
+PUT:	defb	0f6h	; "ORI"to set non-zero flag
+GET:	xor	a	; Set zero
+	ld	(PGTFLG),a	; Save flag
+	call	FILSCN	; Get pointer at file data block
+	cp	MD.RND	; Must be a random file
+	jp	nz,DERBFM	; If not, "Bad file mode"
+	push	bc	; Save pointer at file data block
+	push	hl	; Save text pointer
+	ld	hl,0+FD.LOG	; Fetch current logical posit
+	add	hl,bc
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	de	; Compensate for "DCX D" when call INTIDX
+	ex	(sp),hl		; Save data block pointer and get text pointer
+	ld	a,(hl)
+	cp	44	; Is there a record number
+	call	z,INTIDX	; Read it if there, 1-indexed
+	dec	hl	; Make sure statement ends
+	call	CHRGTR
+	jp	nz,SNERR
+	ex	(sp),hl		; Save text pointer, get data block pointer
+	ld	a,e	; Get record #
+	or	d	; Make sure its not zero
+	jp	z,DERBRN	; If so, "Bad record number"
+	dec	hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	dec	de
+	pop	hl	; Get back text pointer
+	pop	bc
+	push	hl	; Save back text pointer
+	push	bc	; Pointer to file data block
+	ld	hl,0+FD.OPS	; Zero output file posit
+	add	hl,bc
+	xor	a
+	ld	(hl),a
+	inc	hl
+	ld	(hl),a
+	ld	hl,0+FD.SIZ	; Get logical record size in [D,E]
+	add	hl,bc
+	ld	a,(hl)
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ex	de,hl		; Record size to [D,E], posit in [H,L]
+	push	de	; Save record size (count of bytes)
+; Record size in [D,E]
+; Logical position in [H,L]
+; This code computes physical record # in [H,L]
+; offset into buffer in [D,E]
+	push	hl	; Save logical posit
+	ld	hl,0+DATPSC	; Get sector size
+	call	DCOMPR	; Compare the two
+	pop	hl	; Restore logical posit
+	jp	nz,NTLSAP	; If record size=sector size, done
+	ld	de,0	; Set offset to zero
+	jp	DONCLC	; Done with calculations
+NTLSAP:	ld	b,d	; Copy record size to [B,C]
+	ld	c,e
+	ld	a,10h	; 16 by 16 multiply
+	ex	de,hl		; Put multiplier in [D,E]
+	ld	hl,0	; Set both parts of product to zero
+	push	hl	; 2nd part is on stack
+FRMUL1:	add	hl,hl
+	ex	(sp),hl
+	jp	nc,FNOCRY
+	add	hl,hl
+	inc	hl
+	jp	FNOCY0
+FNOCRY:	add	hl,hl
+FNOCY0:	ex	(sp),hl
+	ex	de,hl
+	add	hl,hl	; Rotate [D,E] left one
+	ex	de,hl
+	jp	nc,FNOCY2	; Add in [B,C] if Ho=1
+	add	hl,bc
+	ex	(sp),hl
+	jp	nc,FNOINH
+	inc	hl
+FNOINH:	ex	(sp),hl
+FNOCY2:	dec	a	; are we done multiplying
+	jp	nz,FRMUL1	; No, go back for next bit of product
+; Now divide by the number of bytes in a sector
+	IFF	DATPSC-256
+	ld	e,l	; Remainder is just low byte
+	ld	d,0	; Of which HO is 0
+	ld	l,h	; Annd record # is shifted down
+	pop	bc	; Get most sig. Byte of record #
+	ld	h,c	; set record # to it
+	ld	a,b	; Make sure rest=0
+	or	a
+	jp	nz,FCERR
+	ENDIF		; UH-OH
+	IF	DATPSC-128
+	IF	DATPSC-256
+	pop	de	; Get high word of dividend in [D,E]
+	ld	bc,0	; Set dividend to zero.
+KEPSUB:	push	bc	; Save dividend
+	ld	bc,0-DATPSC	; Get divisor (# of bytes sector)
+	add	hl,bc	; Subtract it
+	jp	c,GUARCY	; Carry from low bytes implies cary from high
+	ex	de,hl		; Subtract -1 from high byte
+	ld	bc,0-1
+	add	hl,bc
+	ex	de,hl		; Put result back where it belongs
+GUARCY:	pop	bc	; Restore dividend
+	jp	nc,DONDIV	; Finished
+	inc	bc	; Add one to it
+	ld	a,b	; See if overflowed
+	or	c
+	jp	nz,KEPSUB	; Keep at it till done
+	jp	FCERR	; Yes give error
+DONDIV:	push	bc	; Save dividend
+	ld	bc,0+DATPSC	; Correct for one too many subtraction
+	add	hl,bc	; By adding divisor back in
+	pop	de	; Dividend ends up in [D,E], Remainder in [H,L]
+	ex	de,hl
+	ENDIF
+	ENDIF		; Put values in right regs for rest of code
+	IFF	DATPSC-128
+	ld	a,l	; Get low byte of result
+	and	127	; Get rid of high bit
+	ld	e,a	; this is it
+	ld	d,0	; Set high byte of remainder to zero
+	pop	bc	; Get high word of product
+	ld	a,l	; Get MSB of low word
+	ld	l,h
+	ld	h,c
+	add	hl,hl	; Make space for it
+	jp	c,FCERR	; UH-OH record # to big!
+	rla		; Is it set?
+	jp	nc,DONINH	; Not set
+	inc	hl	; Copy it into low bit
+DONINH:	ld	a,b	; Get high byte of record #
+	or	a	;  Is it non-zero
+	jp	nz,FCERR
+	ENDIF		; Bad
+DONCLC:	
+; At this point, record #is in [H,L]
+; offset into record in [D,E]
+; Stack:
+; COUNT of bytes to read or write
+; data block
+; Text pointer
+; Return Address
+	ld	(RECORD),hl	; Save record size
+	pop	hl	; Get count
+	pop	bc	; Pointer to file data block
+	push	hl	; Save back count
+	ld	hl,0+FD.DAT	; Point to Field buffer
+	add	hl,bc	; Add start of data block
+	ld	(LBUFF),hl	; Save pointer to FIELD buffer
+NXTOPD:	ld	hl,0+DATOFS	; Point to physical buffer
+	add	hl,bc	; Add file block offset
+	add	hl,de
+	ld	(PBUFF),hl	; Save
+	pop	hl	; Get count
+	push	hl	; Save count
+	ld	hl,0+DATPSC	; [H,L]=DATPSC-offset
+	ld	a,l
+	sub	e
+	ld	l,a
+	ld	a,h
+	sbc	a,d
+	ld	h,a
+	pop	de	; Get back count (destroy offset)
+	push	de	; Save COUNT
+	call	DCOMPR	; Which is smaller, count or DATPSC-offset?
+	jp	c,DATMOF	; The latter
+	ld	h,d	; Copy count into bytes
+	ld	l,e
+DATMOF:	ld	a,(PGTFLG)	; PUT or GET
+	or	a	; Set cc's
+	jp	z,FIVDRD	; Was Read
+	ld	de,0+DATPSC	; If bytes .LT. DATPSC then read(sector)
+	call	DCOMPR
+	jp	nc,NOFVRD	; (Idea-if writing full buffer, no need to read)
+	push	hl	; Save bytes
+	call	GETSUB	; Read record.
+	pop	hl	; Bytes
+NOFVRD:	push	bc
+	ld	b,h
+	ld	c,l
+	ld	hl,(PBUFF)
+	ex	de,hl
+	ld	hl,(LBUFF)	; Get ready to move bytes between buffers
+	call	FDMOV	; Move bytes to physical buffer
+	ld	(LBUFF),hl	; Store updated pointer
+	ld	d,b	; COUNT TO [D,E]
+	ld	e,c
+	pop	bc	; Restore FDB pointer
+	call	PUTSUB	; Do write
+NXFVBF:	pop	hl	; Count
+	ld	a,l	; Make count correct
+	sub	e
+	ld	l,a
+	ld	a,h
+	sbc	a,d
+	ld	h,a
+	or	l	; Is count zero?
+	ld	de,0	; Set offset=0
+	push	hl	; Save COUNT
+	ld	hl,(RECORD)
+	inc	hl	; Increment it
+	ld	(RECORD),hl	; Save back
+	jp	nz,NXTOPD	; Keep working on it
+	pop	hl	; Get rid of COUNT
+	pop	hl	; Restore text pointer
+	ret		; Done
+
+; Read code
+; [H,L]=bytes
+; [D,E]=count
+FIVDRD:	push	hl	; Save bytes
+	call	GETSUB	; Do read
+	pop	hl	; Get back bytes
+	push	bc
+	ld	b,h
+	ld	c,l
+	ld	hl,(LBUFF)	; Point to logical buffer
+	ex	de,hl
+	ld	hl,(PBUFF)
+	call	FDMOV
+	ex	de,hl		; Get pointer to FIELD buffer in [H,L]
+	ld	(LBUFF),hl	; Save back updated logical buffer
+	ld	d,b	; COUNT TO [D,E]
+	ld	e,c
+	pop	bc
+	jp	NXFVBF
+PUTSUB:	defb	00f6h
+GETSUB:	xor	a
+	ld	(MAXTRK),a	; GET/PUT Fflag
+	push	bc
+	push	de
+	push	hl
+	ld	hl,(RECORD)
+	ex	de,hl
+	ld	hl,0+FD.PHY	; Point to physical record #
+	add	hl,bc	; Add offset to file buffer
+	push	hl	; Save this pointer
+	ld	a,(hl)	; Get current phys. rec #
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	inc	de
+	call	DCOMPR	; Do we already have record in buffer
+	pop	hl	; Restore pointer
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d	; Store new record number
+	jp	nz,NTREDS	; Curent and previos record numbers are different
+	ld	a,(MAXTRK)	; Trying to do read?
+	or	a
+	jp	z,SUBRET	; If trying to read and record already
+			; in buffer, do nothing
+NTREDS:	ld	hl,SUBRET	; Where to return to
+	push	hl
+	push	bc	; File data block
+	push	hl	; Dummy text pointer
+	ld	hl,0+LOCOFS+1	; where [H,L] is expected to be
+	add	hl,bc
+	jp	FIVDPT	; Call old PUT/GET
+SUBRET:	pop	hl
+	pop	de
+	pop	bc
+	ret		; Restore all regs and return to caller
+
+; Move bytes from [H,L] to [D,E] [B,C] times
+FDMOV:	push	bc	; Save count
+FDMOV1:	ld	a,(hl)	; Get byte
+	ld	(de),a	; Store it
+	inc	hl
+	inc	de
+	dec	bc	; Decrement count
+	ld	a,b	; Gone to zero?
+	or	c
+	jp	nz,FDMOV1	; Go back for more
+	pop	bc	; Return with count in [D,E]
+	ret
+
+FILOFV:	pop	af	; Get character off stack
+	push	de	; Save [D,E]
+	push	bc	; Save [B,C]
+	push	af	; Save back char
+	ld	b,h	; [B,C]=file data block
+	ld	c,l
+	call	CMPFPS	; Any room in buffer
+	jp	z,DERFOV	; No
+	call	SETFPI	; save new position
+	ld	hl,0+FD.DAT-1	; Index into data buffer
+	add	hl,bc	; Add start of file control block
+	add	hl,de	; Add offset into buffer
+	pop	af	; Get back char
+	ld	(hl),a	; Store in buffer
+	push	af	; Save char
+	ld	hl,0+NMLOFS	; Set up [H,L] to point at print posit
+	add	hl,bc
+	ld	d,(hl)	; Get present position
+	ld	(hl),0	; Assume set it to zero
+	cp	13	; Is it <Cr>?
+	jp	z,FISCR	; Yes
+	add	a,224	; Set carry for spaces & higher
+	ld	a,d	; Add one to current posit
+	adc	a,0
+	ld	(hl),a
+FISCR:	pop	af	; Restore all regs
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+FILIFV:	push	de	; Save [D,E]
+	call	CMPFBC	; Compare to present posit
+	jp	z,DERFOV	; Return with null
+	call	SETFPI	; Set new position
+	ld	hl,0+FD.DAT-1	; Point to data
+	add	hl,bc
+	add	hl,de
+	ld	a,(hl)	; Get the byte
+	or	a	; Clear carry (no EOF)
+	pop	de	; Restore [D,E]
+	pop	hl	; Restore [H,L]
+	pop	bc	; Restore [B,C]
+	ret
+
+GETFSZ:	ld	hl,0+FD.SIZ	; Point to record size
+	jp	GETFP1	; Continue
+GETFPS:	ld	hl,0+FD.OPS	; Point to output position
+GETFP1:	add	hl,bc	; Add offset into buffer
+	ld	e,(hl)	; Get value
+	inc	hl
+	ld	d,(hl)
+	ret
+
+SETFPI:	inc	de	; Increment current posit
+SETFPS:	ld	hl,0+FD.OPS	; Point to output position
+	add	hl,bc	; Add file control block address
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d
+	ret
+CMPFBC:	ld	b,h	; Copy file data block into [B,C]
+	ld	c,l
+CMPFPS:	call	GETFPS	; Get present posit
+	push	de	; Save it
+	call	GETFSZ	; Get file size
+	ex	de,hl		; into [H,L]
+	pop	de	; Get back posit
+	call	DCOMPR	; See if were at end
+	ret
+
+	PAGE
+	SUBTTL	Protected files
+
+	PUBLIC	PROLOD
+	EXTRN	BINPSV
+	PUBLIC	PROSAV
+PROSAV:	call	CHRGTR	; Get char after "S"
+	ld	(TEMP),hl	; Save text pointer
+	EXTRN	SCCPTR
+	call	SCCPTR	; Get rid of GOTO pointers
+	call	PENCOD	; encode binary
+	ld	a,254	; Put out 254 at start of file
+	call	BINPSV	; Do SAVE
+	call	PDECOD	; Re-decode binary
+	jp	GTMPRT	; Back to NEWSTT
+
+N1	defl 11	; Number of bytes to use from ATNCON
+N2	defl 13	; Number of bytes to use from SINCON
+	PUBLIC	PENCOD
+PENCOD:	ld	bc,0+N1+N2*256	; Initialize both counters
+	ld	hl,(TXTTAB)	; Starting point
+	ex	de,hl		; Into [D,E]
+ENCDBL:	ld	hl,(VARTAB)	; At end?
+	call	DCOMPR	; Test
+	ret	z		; Yes
+	ld	hl,ATNCON	; Point to first scramble table
+	ld	a,l	; Use [C] to index into it
+	add	a,c
+	ld	l,a
+	ld	a,h
+	adc	a,0
+	ld	h,a
+	ld	a,(de)	; Get byte from program
+	sub	b	; Subtract counter for no reason
+	xor	(hl)	; XOR entry
+	push	af	; Save result
+	ld	hl,SINCON	; calculate offset into SINCON using [B]
+	ld	a,l
+	add	a,b
+	ld	l,a
+	ld	a,h
+	adc	a,0
+	ld	h,a
+	pop	af	; Get back current byte
+	xor	(hl)	; XOR on this one too
+	add	a,c	; Add counter for randomness
+	ld	(de),a	; Store back in program
+	inc	de	; Incrment pointer
+	dec	c	; decrment first table index
+	jp	nz,CNTZER	; Still non-Zero
+	ld	c,N1	; Re-initialize counter 1
+CNTZER:	dec	b	; dedecrement counter-2
+	jp	nz,ENCDBL	; Still non-zero, go for more
+	ld	b,N2	; Re-initialize counter 2
+	jp	ENCDBL	; Keep going until done
+PROLOD:	
+PDECOD:	ld	bc,0+N1+N2*256	; Initialize both counters
+	ld	hl,(TXTTAB)	; Starting point
+	ex	de,hl		; Into [D,E]
+DECDBL:	ld	hl,(VARTAB)	; At end?
+	call	DCOMPR	; Test
+	ret	z		; Yes
+	ld	hl,SINCON	; calculate offset into SINCON using [B]
+	ld	a,l
+	add	a,b
+	ld	l,a
+	ld	a,h
+	adc	a,0
+	ld	h,a
+	ld	a,(de)	; Get byte from program
+	sub	c	; Subtract counter for randomness
+	xor	(hl)	; XOR on this one too
+	push	af	; Save result
+	ld	hl,ATNCON	; Point to first scramble table
+	ld	a,l	; Use [C] to index into it
+	add	a,c
+	ld	l,a
+	ld	a,h
+	adc	a,0
+	ld	h,a
+	pop	af	; Get back current byte
+	xor	(hl)	; XOR entry
+	add	a,b	; Add counter for no reason
+	ld	(de),a	; Store back in program
+	inc	de	; Increment pointer
+	dec	c	; decrment first table index
+	jp	nz,CNTZR2	; Still non-Zero
+	ld	c,N1	; Re-initialize counter 1
+CNTZR2:	dec	b
+	jp	nz,DECDBL	; Decrement counter-2, Still non-zero, go for more
+	ld	b,N2	; Re-initialize counter 2
+	jp	DECDBL	; Keep going until done
+
+	PUBLIC	PROCHK,PRODIR
+PRODIR:	push	hl	; Save [H,L]
+	ld	hl,(CURLIN)	; Get current line #
+	ld	a,h	; Direct?
+	and	l
+	pop	hl	; Restore [H,L]
+	inc	a	; If A=0, direct
+	ret	nz
+PROCHK:	push	af	; Save flags
+	ld	a,(PROFLG)	; Is this a protected file?
+	or	a	; Set CC's
+	jp	nz,FCERR	; Yes, give error
+	pop	af	; Restore flags
+	ret
+
+TEMPB:			; Used by FIELD
+RECORD:	defs	2, 0	; Record #
+LBUFF:	defs	2, 0	; Logical buffer address
+PBUFF:	defs	2, 0	; Physical buffer address
+PGTFLG:	defs	1, 0	; PUT/GET flag (Non zero=PUT)
+
+	end
+

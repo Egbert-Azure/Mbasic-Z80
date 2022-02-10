@@ -1,0 +1,796 @@
+	.symlen 6
+	SUBTTL	Common file for BASIC interpreter
+	.SALL
+
+CONTO	defl 15	; CHARACTER TO SUPRESS OUTPUT (USUALLY CONTROL-O)
+DBLTRN	defl 0	; FOR DOUBLE PRECISION TRANSCENDENTALS
+	IF2
+
+	.printx	/EXTENDED/
+
+
+	.printx	/LPT/
+
+	.printx	/CPM DISK/
+
+
+	.printx	/Z80/
+
+	.printx	/FAST/
+
+	.printx	/5.0 FEATURES/
+
+	.printx	/ANSI COMPATIBLE/
+	ENDIF
+
+CLMWID	defl 14	; MAKE COMMA COLUMNS FOURTEEN CHARACTERS
+DATPSC	defl 128	; NUMBER OF DATA BYTES IN DISK SECTOR
+LINLN	defl 80	; TERMINAL LINE LENGTH
+LPTLEN	defl 132
+BUFLEN	defl 255	; LONG LINES
+NAMLEN	defl 40	; MAXIMUM LENGTH NAME -- 3 TO 127
+
+NUMLEV	defl 0*20+19+2*5	; NUMBER OF STACK LEVELS RESERVED
+			; BY AN EXPLICIT CALL TO GETSTK
+
+STRSIZ	defl 4
+
+STRSIZ	defl 3
+NUMTMP	defl 3	; NUMBER OF STRING TEMPORARIES
+
+NUMTMP	defl 10
+
+MD.RND	defl 3	; THE MODE NUMBER FOR RANDOM FILES
+MD.SQI	defl 1	; THE MODE NUMBER FOR SEQUENTIAL INPUT FILES
+			; NEVER WRITTEN INTO A FILE
+MD.SQO	defl 2	; THE MODE FOR SEQUENTIAL OUTPUT FILES
+			; AND PROGRAM FILES
+CPMWRM	defl 0	; CP/M WARM BOOT ADDR
+CPMENT	defl CPMWRM+5	; CP/M BDOS CALL ADDR
+	CSEG
+TRUROM	defl 0
+	PAGE
+	TITLE	FIVEO 5.0 Features -WHILE/WEND, CALL, CHAIN, WRITE /P. Allen
+	.SALL
+	EXTRN	CHRGTR,SYNCHR,DCOMPR
+	EXTRN	GETYPR
+	EXTRN	SNERR,GETSTK,PTRGET,SUBFLG,TEMP,CRDO
+	EXTRN	VMOVFM,FRCINT
+	PAGE
+	SUBTTL	WHILE, WEND
+	PUBLIC	WHILE,WEND
+	EXTRN	ENDFOR,ERROR,FRMEVL,$FOR,$WHILE,WNDSCN
+	EXTRN	SAVSTK,NEWSTT,NXTLIN,CURLIN,FORSZC,ERRWE
+;
+; THIS CODE HANDLES THE STATEMENTS WHILE/WEND
+; THE 8080 STACK IS USED TO PUT AN ENTRY ON FOR EACH ACTIVE WHILE
+; THE SAME WAY ACTIVE GOSUB AND FOR ENTRIES ARE MADE.
+; THE FORMAT IS AS FOLLOWS:
+;	$WHILE - THE TOKEN IDENTIFYING THE ENTRY (1 BYTE)
+;	A TEXT POINTER AT THE CHARACTER AFTER THE WEND OF THE WHILE BODY (2 BYTES)
+;	A TEXT POINTER AT THE CHARACTER AFTER THE WHILE OF THE WHILE BODY (2 BYTES)
+;	THE LINE NUMBER OF THE LINE THAT THE WHILE IS ON (2 BYTES)
+;
+;	TOTAL	7 BYTES
+;
+WHILE:	ld	(ENDFOR),hl	; KEEP THE WHILE TEXT POINTER HERE
+	call	WNDSCN	; SCAN FOR THE MATCHING WEND
+			; CAUSE AN ERRWH IF NO WEND TO MATCH
+	call	CHRGTR	; POINT AT CHARACTWER AFTER WEND
+	ex	de,hl		; [D,E]= POSITION OF MATCHING WEND
+	call	FNDWND	; SEE IF THERE IS A STACK ENTRY FOR THIS WHILE
+	inc	sp	; GET RID OF THE NEWSTT ADDRESS ON THE STACK
+	inc	sp
+	jp	nz,WNOTOL	; IF NO MATCH NO NEED TO TRUNCATE THE STACK
+	add	hl,bc	; ELIMINATE EVERYTHING UP TO AND INCLUDING
+			; THE MATCHING WHILE ENTRY
+	ld	sp,hl
+	ld	(SAVSTK),hl
+WNOTOL:	ld	hl,(CURLIN)	; MAKE THE STACK ENTRY
+	push	hl
+	ld	hl,(ENDFOR)	; GET TEXT POINTER FOR WHILE BACK
+	push	hl
+	push	de	; SAVE THE WEND TEXT POINTER
+	jp	FNWEND	; FINISH USING WEND CODE
+
+WEND:	jp	nz,SNERR	; STATEMENT HAS NO ARGUMENTS
+	ex	de,hl		; FIND MATCHING WHILE ENTRY ON STACK
+	call	FNDWND
+	jp	nz,WEERR	; MUST MATCH OR ELSE ERROR
+	ld	sp,hl		; TRUNCATE STACK AT MATCH POINT
+	ld	(SAVSTK),hl
+	ex	de,hl		; SAVE [H,L] POINTING INTO STACK ENTRY
+	ld	hl,(CURLIN)	; REMEMBER WEND LINE #
+	ld	(NXTLIN),hl	; IN NXTLIN
+	ex	de,hl
+	inc	hl	; INDEX INTO STACK ENTRY TO GET VALUES
+	inc	hl	; SKIP OVER TEXT POINTER OF WEND
+	ld	e,(hl)	; SET [D,E]=TEXT POINTER OF WHILE
+	inc	hl
+	ld	d,(hl)
+	inc	hl
+	ld	a,(hl)	; [H,L]=LINE NUMBER OF WHILE
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(CURLIN),hl	; IN CASE OF ERROR OR CONTINUATION FIX CURLIN
+	ex	de,hl		; GET TEXT POINTER OF WHILE FORMULA INTO [H,L]
+FNWEND:	call	FRMEVL	; EVALUATE FORMULA
+	EXTRN	VSIGN
+	push	hl	; SAVE TEXT POINTER
+	call	VSIGN	; GET IF TRUE OR FALSE
+	pop	hl	; GET BACK WHILE TEXT POINTER
+	jp	z,FLSWHL	; GO BACK AT WEND IF FALSE
+	ld	bc,0+$WHILE	; COMPLETE WHILE ENTRY
+	ld	b,c	; NEED IT IN THE HIGH BYTE
+	push	bc
+	inc	sp	; ONLY USE ONE BYTE
+	jp	NEWSTT
+
+FLSWHL:	ld	hl,(NXTLIN)	; SETUP CURLIN FOR WEND
+	ld	(CURLIN),hl
+	pop	hl	; TAKE OFF TEXT OF WEND AS NEW TEXT POINTER
+	pop	af	; GET RID OF TEXT POINTER OF WHILE
+	pop	af	; TAKE OFF LINE NUMBER OF WHILE
+	jp	NEWSTT
+;
+; THIS SUBROUTINE SEARCHES THE STACK FOR AN WHILE ENTRY
+; WHOSE WEND TEXT POINTER MATCHES [D,E]. IT RETURNS WITH ZERO TRUE
+; IF A MATCH IS FOUND AND ZERO FALSE OTHERWISE. FOR ENTRIES
+; ARE SKIPPED OVER, BUT GOSUB ENTRIES ARE NOT.
+;
+WHLSIZ	defl 6
+FNDWND:	ld	hl,0+4	; SKIP OVER RETURN ADDRESS AND NEWSTT
+	add	hl,sp
+FNDWN2:	
+	ld	a,(hl)	; GET THE ENTRY TYPE
+	inc	hl
+	ld	bc,0+$FOR
+	cp	c	; SEE IF ITS $FOR
+	jp	nz,FNDWN3
+	ld	bc,FORSZC
+	add	hl,bc
+	jp	FNDWN2
+FNDWN3:	ld	bc,0+$WHILE
+	cp	c
+	ret	nz
+	push	hl
+	ld	c,(hl)	; PICK UP THE WEND TEXT POINTER
+	inc	hl
+	ld	b,(hl)
+	ld	h,b
+	ld	l,c
+	call	DCOMPR
+	pop	hl
+	ld	bc,0+WHLSIZ
+	ret	z		; RETURN IF ENTRY MATCHES
+	add	hl,bc
+	jp	FNDWN2
+
+WEERR:	ld	de,0+ERRWE
+	jp	ERROR
+	PAGE
+	SUBTTL	CALL statement
+	PUBLIC	CALLS
+; This is the CALL <simple var>[(<simple var>[,<simple var>]..)]
+; Stragegy:
+;
+; 1.) Make sure suboutine name is simple var, get value & save it
+;
+; 2.) Allocate space on stack for param adresses
+;
+; 3.) Evaluate params & stuff pointers on stack
+;
+; 3.) POP off pointers ala calling convention
+;
+; 4.) CALL suboutine with return address on stack
+MAXPRM	defl 32	; MAX # OF PARAMS TO ASSEMBLY LANGUAGE SUBROUTINE
+	EXTRN	TEMPA
+CALLS:	
+	ld	a,80h	; Flag PTRGET not to allow arrays
+	ld	(SUBFLG),a
+	call	PTRGET	; Evaluate var pointer
+	push	hl	; Save text pointer
+	ex	de,hl		; Var pointer to [H,L]
+	call	GETYPR	; Get type of var
+	call	VMOVFM	; Store value in FAC
+	call	FRCINT	; Evaluate var
+	ld	(TEMPA),hl	; Save it
+	ld	c,MAXPRM	; Check to see if we have space for max parm block
+	call	GETSTK
+	pop	de	; Get text pointer off stack
+	ld	hl,0-2*MAXPRM	; Get space on stack for parms
+	add	hl,sp
+	ld	sp,hl		; Adjust stack
+	ex	de,hl		; Put text pointer in [H,L], stack pointer in [D,E]
+	ld	c,MAXPRM	; Get # of params again
+	dec	hl	; Back up text pointer
+	call	CHRGTR	; Get char
+	ld	(TEMP),hl	; Save text pointer
+	jp	z,CALLST	; If end of line, GO!
+	call	SYNCHR
+	defb	'('	; Eat left paren
+GETPAR:	push	bc	; Save count
+	push	de	; Save pointer into stack
+	call	PTRGET	; Evaluate param address
+	ex	(sp),hl		; Save text pointer get pointer into stack
+	ld	(hl),e	; Save var address on stack
+	inc	hl
+	ld	(hl),d
+	inc	hl
+	ex	(sp),hl		; Save back var pointer, get text pointer
+	pop	de
+	pop	bc
+	ld	a,(hl)	; Look at terminator
+	cp	2ch	; Comma?
+	jp	nz,ENDPAR	; Test
+	dec	c	; Decrement count of params
+	call	CHRGTR	; Get next char
+	jp	GETPAR	; Back for more
+ENDPAR:	call	SYNCHR
+	defb	')'	; Should have left paren
+	ld	(TEMP),hl	; Save text pointer
+	ld	a,MAXPRM+1	; Calc # of params
+	sub	c
+	pop	hl	; At least one, get its address in [H,L]
+	dec	a	; Was it one?
+	jp	z,CALLST	; Yes
+	pop	de	; Next address in [D,E]
+	dec	a	; Two?
+	jp	z,CALLST	; Yes
+	pop	bc	; Final in [B,C]
+	dec	a	; Three?
+	jp	z,CALLST	; Yes
+	push	bc	; Save back third parm
+	push	hl	; Save back first
+	ld	hl,0+2	; Point to rest of parm list
+	add	hl,sp
+	ld	b,h	; Get into [B,C]
+	ld	c,l
+	pop	hl	; Restore parm three
+CALLST:	push	hl	; Save parm three
+	ld	hl,CALLRT	; Where subroutines return
+	ex	(sp),hl		; Put it on stack, get back parm three
+	push	hl	; Save parm three
+	ld	hl,(TEMPA)	; Get subroutine address
+	ex	(sp),hl		; Save, get back parm three
+	ret		; Dispatch to subroutine
+
+CALLRT:	ld	hl,(SAVSTK)	; Restore stack to former state
+	ld	sp,hl
+	ld	hl,(TEMP)	; Get back text poiner
+	jp	NEWSTT	; Get next statement
+	PAGE
+	SUBTTL	CHAIN
+	EXTRN	TXTTAB,FRMEVL,$COMMO,OMERR,SCRTCH,VALTYP,$MERGE,LINGET
+	EXTRN	$DELETE
+	PUBLIC	CHAIN,COMPTR,COMPT2,COMMON
+	EXTRN	GARBA2,FRETOP,MOVE1,NEWSTT,PTRGET,STRCPY
+	EXTRN	SAVFRE
+	EXTRN	IADAHL
+	EXTRN	SUBFLG,TEMP3,TEMP9,VARTAB,ARYTAB,BLTUC,CHNFLG,CHNLIN,DATA
+	EXTRN	FNDLIN,STREND,USERR,CURLIN,ERSFIN,FCERR,NOARYS,SAVSTK,ENDBUF
+	EXTRN	DEL,CMEPTR,CMSPTR,MRGFLG,MDLFLG,LINKER,SCNLIN,FRQINT
+; This is the code for the CHAIN statement
+; The syntax is:
+; CHAIN [MERGE]<file name>[,[<line number>][,ALL][,DELETE <range>]]
+; The steps required to execute a CHAIN are:
+;
+; 1.) Scan arguments
+;
+; 2.) Scan program for all COMMON statements and 
+;	mark specified variables.
+;
+; 3.) Squeeze unmarked entries from symbol table.
+;
+; 4.) Copy string literals to string space
+;
+; 5.) Move all simple variables and arrays into the
+;	bottom of string space.
+;
+; 6.) Load new program
+;
+; 7.) Move variables back down positioned after program.
+;
+; 8.) Run program
+CHAIN:	
+	xor	a	; Assume no MERGE
+	ld	(MRGFLG),a
+	ld	(MDLFLG),a	; Also no MERGE w/ DELETE option
+	ld	a,(hl)	; Get current char
+	ld	de,0+$MERGE	; Is it MERGE?
+	cp	e	; Test
+	jp	nz,NTCHNM	; NO
+	ld	(MRGFLG),a	; Set MERGE flag
+	inc	hl
+NTCHNM:	dec	hl	; Rescan file name
+	call	CHRGTR
+	EXTRN	PRGFLI
+	call	PRGFLI	; Evaluate file name and OPEN it
+	push	hl	; Save text pointer
+	ld	hl,0	; Get zero
+	ld	(CHNLIN),hl	; Assume no CHAIN line #
+	pop	hl	; Restore text pointer
+	dec	hl	; Back up pointer
+	call	CHRGTR	; Scan char
+	jp	z,NTCHAL	; No line number etc.
+	call	SYNCHR
+	defb	2ch	; Must be comma
+	cp	2ch	; Ommit line # (Use ALL for instance)
+	jp	z,NTLINF	; YES
+	call	FRMEVL	; Evaluate line # formula
+	push	hl	; Save text poiner
+	call	FRQINT	; Force to int in [H,L]
+	ld	(CHNLIN),hl	; Save it for later
+	pop	hl	; Restore text poiner
+	dec	hl	; Rescan last char
+	call	CHRGTR
+	jp	z,NTCHAL	; No ALL i.e. preserve all vars across CHAIN
+NTLINF:	call	SYNCHR
+	defb	2ch	; Should be comma here
+	ld	de,0+$DELETE	; Test for DELETE option
+	cp	e	; Is it?
+	jp	z,CHMWDL	; Yes
+	call	SYNCHR
+	defb	'A'	; Check for "ALL"
+	call	SYNCHR
+	defb	'L'
+	call	SYNCHR
+	defb	'L'
+	jp	z,DNCMDA	; Goto step 3
+	call	SYNCHR
+	defb	2ch	; Force comma to appear
+	cp	e	; Must be DELETE
+	jp	nz,SNERR	; No, give error
+	or	a	; Flag to goto DNCMDA
+CHMWDL:	push	af	; Save ALL flag
+	ld	(MDLFLG),a	; Set MERGE w/ DELETE
+	call	CHRGTR	; Get char after comma
+	call	SCNLIN	; Scan line range
+	EXTRN	DEPTR
+	push	bc
+	call	DEPTR	; Change pointers back to numbers
+	pop	bc
+	pop	de	; Pop max line off stack
+	push	bc	; Save pointer to start of 1st line
+	ld	h,b	; Save pointer to start line
+	ld	l,c
+	ld	(CMSPTR),hl
+	call	FNDLIN	; Find the last line
+	jp	nc,FCERRG	; Must have exact match on end of range
+	ld	d,h	; [D,E] = pointer at the start of the line
+	ld	e,l	; beyond the last line in the range
+	ld	(CMEPTR),hl	; Save pointer to end line
+	pop	hl	; Get back pointer to start of range
+	call	DCOMPR	; Make sure the start comes before the end
+FCERRG:	jp	nc,FCERR	; If not, "Illegal function call"
+	pop	af	; Flag that says whether to go to DNCMDA
+	jp	nz,DNCMDA	; "ALL" option was present
+NTCHAL:	ld	hl,(TXTTAB)	; Start searching for COMMONs at program start
+	dec	hl	; Compensate for next instr
+CLPSC1:	inc	hl	; Look at first char of next line
+CLPSCN:	ld	a,(hl)	; Get char from program
+	inc	hl
+	or	(hl)	; Are we pointing to program end?
+	jp	z,CLPFIN	; Yes
+	inc	hl
+	ld	e,(hl)	; Get line # in [D,E]
+	inc	hl
+	ld	d,(hl)
+	ex	de,hl		; Save current line # in CURLIN for errors
+	ld	(CURLIN),hl
+	ex	de,hl
+CSTSCN:	call	CHRGTR	; Get statment type
+AFTCOM:	or	a
+	jp	z,CLPSC1	; EOL Scan next one
+	cp	':'	; Are we looking at colon
+	jp	z,CSTSCN	; Yes, get next statement
+	ld	de,0+$COMMO	; Test for COMMON, avoid byte externals
+	cp	e	; Is it a COMMON?
+	jp	z,DOCOMM	; Yes, handle it
+	call	CHRGTR	; Get first char of statement
+	call	DATA	; Skip over statement
+	dec	hl	; Back up to rescan terminator
+	jp	CSTSCN	; Scan next one
+DOCOMM:	call	CHRGTR	; Get thing after COMMON
+	jp	z,AFTCOM	; Get next thing
+NXTCOM:	push	hl	; Save text pointer
+	ld	a,1	; Call PTRGET to search for array
+	ld	(SUBFLG),a
+	call	PTRGET	; This subroutine in F3 scans variables
+	jp	z,FNDAAY	; Found array
+	ld	a,b	; Try finding array with COMMON bit set
+	or	128
+	ld	b,a
+	xor	a	; Set zero CC
+	call	ERSFIN	; Search array table
+	ld	a,0	; Clear SUBFLG in all cases
+	ld	(SUBFLG),a
+	jp	nz,NTFN2T	; Not found, try simple
+	ld	a,(hl)	; Get terminator, should be "("
+	cp	'('	; Test
+	jp	nz,SCNSMP	; Must be simple then
+	pop	af	; Get rid of saved text pointer
+	jp	COMADY	; Already was COMMON, ignore it
+NTFN2T:	ld	a,(hl)	; Get terminator
+	cp	'('	; Array specifier?
+	jp	z,FCERR	; No such animal, give "Function call" error
+SCNSMP:	pop	hl	; Rescan variable name for start
+	call	PTRGET	; Evaluate as simple
+COMPTR:	ld	a,d	; If var not found, [D,E]=0
+	or	e
+	jp	nz,COMFNS	; Found it
+	ld	a,b	; Try to find in COMMON
+	or	128	; Set COMMON bit
+	ld	b,a
+	ld	a,(VALTYP)	; Must have VALTYP in [D]
+	ld	d,a
+	call	NOARYS	; Search symbol table
+COMPT2:	ld	a,d	; Found?
+	or	e
+	jp	z,FCERR	; No, who is this guy?
+COMFNS:	push	hl	; Save text pointer
+	ld	b,d	; Get pointer to var in [B,C]
+	ld	c,e
+	ld	hl,BCKUCM	; Loop back here
+	push	hl
+CBAKBL:	dec	bc	; Point at first char of rest
+LPBKNC:	ld	a,(bc)	; Back up until plus byte
+	dec	bc
+	or	a
+	jp	m,LPBKNC
+			; Now point to 2nd char of var name
+	ld	a,(bc)	; set COMMON bit
+	or	128
+	ld	(bc),a
+	ret		; done
+FNDAAY:	ld	(SUBFLG),a	; Array found, clear SUBFLG
+	ld	a,(hl)	; Make sure really array spec
+	cp	'('	; Really an array?
+	jp	nz,SCNSMP	; No, scan as simp
+	ex	(sp),hl		; Save text pointer, get rid of saved text pointer
+BAKCOM:	dec	bc	; Point at last char of name extension
+	dec	bc
+	call	CBAKBL	; Back up before variable and mark as COMMON
+BCKUCM:	pop	hl	; Restore text pointer
+	dec	hl	; Rescan terminator
+	call	CHRGTR
+	jp	z,AFTCOM	; End of COMMON statement
+	cp	'('	; End of COMMON array spec?
+	jp	nz,CHKCST	; No, should be comma
+COMADY:	call	CHRGTR	; Fetch char after paren
+	call	SYNCHR
+	defb	')'	; Right paren should follow
+	jp	z,AFTCOM	; End of COMMON
+CHKCST:	call	SYNCHR
+	defb	2ch	; Force comma to appear here
+	jp	NXTCOM	; Get next COMMON variable
+; Step 3 - Squeeze..
+CLPFIN:	ld	hl,(ARYTAB)	; End of simple var squeeze
+	ex	de,hl		; To [D,E]
+	ld	hl,(VARTAB)	; Start of simps
+CLPSLP:	call	DCOMPR	; Are we done?
+	jp	z,DNCMDS	; Yes done, with simps
+	push	hl	; Save where this simp is
+	ld	c,(hl)	; Get VALTYP
+	inc	hl
+	inc	hl
+	ld	a,(hl)	; Get COMMON bit
+	or	a	; Set minus if COMMON
+	push	af	; Save indicator
+	and	7fh	; Clear COMMON bit
+	ld	(hl),a	; Save back
+	inc	hl
+	call	IADAHL	; Skip over rest of var name
+	ld	b,0	; Skip VALTYP bytes
+	add	hl,bc
+	pop	af	; Get indicator whether to delete
+	pop	bc	; Pointer to where var started
+	jp	m,CLPSLP
+	push	bc	; This is where we will resume scanning vars later
+	call	VARDLS	; Delete variable
+	ld	hl,(ARYTAB)	; Now correct ARYTAB by # of bytes deleted
+	add	hl,de	; Add negative difference between old and new
+	ld	(ARYTAB),hl	; Save new ARYTAB
+	ex	de,hl		; To [D,E]
+	pop	hl	; Get current place back in [H,L]
+	jp	CLPSLP
+VARDLS:	ex	de,hl		; Point to where var ends
+	ld	hl,(STREND)	; One beyond last byte to move
+DLSVLP:	call	DCOMPR	; Done?
+	ld	a,(de)	; Grab byte
+	ld	(bc),a	; Move down
+	inc	de	; Increment pointers
+	inc	bc
+	jp	nz,DLSVLP
+	ld	a,c	; Get difference between old and new
+	sub	l	; Into [D,E] ([D,E]=[B,C]-[H,L])
+	ld	e,a
+	ld	a,b
+	sbc	a,h
+	ld	d,a
+	dec	de	; Correct # of bytes
+	dec	bc	; Moved one too far
+	ld	h,b	; Get new STREND [H,L]
+	ld	l,c
+	ld	(STREND),hl	; Store it
+	ret
+DNCMDS:	ld	hl,(STREND)	; Limit of array search
+	ex	de,hl		; To [D,E]
+CLPAKP:	call	DCOMPR	; Done?
+	jp	z,DNCMDA	; Yes
+	push	hl	; Save pointer to VALTYP
+	inc	hl	; Move down to COMMON bit
+	inc	hl
+	ld	a,(hl)	; Get it
+	or	a	; Set CC's
+	push	af	; Save COMMON indicator
+	and	7fh	; Clear COMMON bit
+	ld	(hl),a	; Save back
+	inc	hl	; Point to length of array
+	call	IADAHL	; Add length of var name
+	ld	c,(hl)	; Get length of array in [B,C]
+	inc	hl
+	ld	b,(hl)
+	inc	hl
+	add	hl,bc	; [H,L] now points after array
+	pop	af	; Get back COMMON indicator
+	pop	bc	; Get pointer to start of array
+	jp	m,CLPAKP	; COMMON, dont delete!
+	push	bc	; Save so we can resume
+	call	VARDLS	; Delete variable
+	ex	de,hl		; Put STREND in [D,E]
+	pop	hl	; Point to next var
+	jp	CLPAKP	; Look at next array
+; Step 4 - Copy literals into string space
+; This code is very smilar to the string garbage collect code
+DNCMDA:	ld	hl,(VARTAB)	; Look at simple strings
+CSVAR:	ex	de,hl		; Into [D,E]
+	ld	hl,(ARYTAB)	; Limit of search
+	ex	de,hl		; Start in [H,L], limit in [D,E]
+	call	DCOMPR	; Done?
+	jp	z,CAYVAR	; Yes
+	ld	a,(hl)	; Get VALTYP
+	inc	hl	; Point to length of long var name
+	inc	hl
+	inc	hl
+	push	af	; Save VALTYP
+	call	IADAHL	; Move past long variable name
+	pop	af	; Ge back VALTYP
+	cp	3	; String?
+	jp	nz,CSKPVA	; Skip this var, not string
+	call	CDVARS	; Copy this guy into string space if nesc
+	xor	a	; CDVARS has already incremented [H,L]
+CSKPVA:	ld	e,a
+	ld	d,0	; Add length of VALTYP
+	add	hl,de
+	jp	CSVAR
+CAYVA2:	pop	bc	; Adjust stack
+CAYVAR:	ex	de,hl		; Save where we are
+	ld	hl,(STREND)	; New limit of search
+	ex	de,hl		; In [D,E], limit in [H,L]
+	call	DCOMPR	; Done?
+	jp	z,DNCCLS	; Yes
+	ld	a,(hl)	; Get VALTYP of array
+	inc	hl
+	inc	hl
+	push	af	; Save VALTYP
+	inc	hl
+	call	IADAHL	; Skip over rest of array name
+	ld	c,(hl)	; Get length of array
+	inc	hl
+	ld	b,(hl)	; Into [B,C]
+	inc	hl
+	pop	af	; Get back VALTYP
+	push	hl	; Save pointer to array element
+	add	hl,bc	; Point after array
+	cp	3	; String array?
+	jp	nz,CAYVA2	; No, look at next one
+	ld	(TEMP3),hl	; Save pointer to end of array
+	pop	hl	; Get back pointer to array start
+	ld	c,(hl)	; Pick up number of DIMs
+	ld	b,0	; Make double with high zero
+	add	hl,bc	; Go past DIMS
+	add	hl,bc
+	inc	hl	; One more to account for # of DIMs
+CAYSTR:	ex	de,hl		; Save current position in [D,E]
+	ld	hl,(TEMP3)	; Get end of array
+	ex	de,hl
+	call	DCOMPR	; See if at end of array
+	jp	z,CAYVAR	; Get next array
+	ld	bc,CAYSTR	; Do next str in array
+	push	bc	; Save branch address on stack
+CDVARS:	xor	a	; Get length of array and
+	or	(hl)	; Set CC's on VALTYP
+	inc	hl	; Also pick up pointer into [D,E]
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	inc	hl	; [H,L] points after descriptor
+	ret	z		; Ignore null strings
+	push	hl	; Save where we are
+	ld	hl,(VARTAB)	; Is string in program text or disk buffers?
+	call	DCOMPR	; Compare
+	pop	hl	; Restore where we are
+	ret	c		; No, must be in string space
+	push	hl	; save where we are again.
+	ld	hl,(TXTTAB)	; is it in buffers?
+	call	DCOMPR	; test
+	pop	hl	; Restore where we are
+	ret	nc		; in buffers, do nothing
+	push	hl	; Save where we are for nth time
+	dec	hl	; Point to start of descriptor
+	dec	hl
+	dec	hl
+	push	hl	; Save pointer to start
+	call	STRCPY	; Copy string into DSCTMP
+	pop	hl	; Destination in [H,L], source in [D,E]
+	ld	b,3	; # of bytes to move
+	call	MOVE1	; Move em
+	pop	hl	; Where we are
+	ret
+; Step 5 - Move stuff up into string space!
+DNCCLS:	call	GARBA2	; Get rid of unused strings
+	ld	hl,(STREND)	; Load end of vars
+	ld	b,h	; Into [B,C]
+	ld	c,l
+	ld	hl,(VARTAB)	; Start of simps into [D,E]
+	ex	de,hl
+	ld	hl,(ARYTAB)
+	ld	a,l	; Get length of simps in [H,L]
+	sub	e
+	ld	l,a
+	ld	a,h
+	sbc	a,d
+	ld	h,a
+	ld	(TEMP9),hl	; Save here
+	ld	hl,(FRETOP)	; Destination of high byte
+	ld	(SAVFRE),hl	; Save FRETOP to restore later
+	call	BLTUC	; Move stuff up
+	ld	h,b	; Now adjust top of memory below saved vars
+	ld	l,c
+	dec	hl	; One lower to be sure
+	ld	(FRETOP),hl	; Update FRETOP to reflect new value
+	ld	a,(MDLFLG)	; MERGE w/ DELETE?
+	or	a	; Test
+	jp	z,NTMDLT	; No
+	ld	hl,(CMSPTR)	; Start of lines to delete
+	ld	b,h	; Into [B,C]
+	ld	c,l
+	ld	hl,(CMEPTR)	; End of lines to delete
+	call	DEL	; Delete the lines
+	call	LINKER	; Re-link lines just in case
+; Step 6 - load new program
+NTMDLT:	ld	a,1	; Set CHAIN flag
+	ld	(CHNFLG),a
+	EXTRN	CHNENT,MAXFIL,LSTFRE,OKGETM
+	ld	a,(MRGFLG)	; MERGEing?
+	or	a	; Set cc'S
+	jp	nz,OKGETM	; Do MERGE
+	ld	a,(MAXFIL)	; Save the number of files
+	ld	(LSTFRE+1),a	; Since we make it look like zero
+	jp	CHNENT	; Jump to LOAD code
+; Step 7 - Move stuff back down
+	PUBLIC	CHNRET
+CHNRET:	xor	a	; Clear CHAIN, MERGE flags
+	ld	(CHNFLG),a
+	ld	(MRGFLG),a
+	ld	hl,(VARTAB)	; Get current VARTAB
+	ld	b,h	; Into [B,C]
+	ld	c,l
+	ld	hl,(TEMP9)	; Get length of simps
+	add	hl,bc	; Add to present VARTAB to get new ARYTAB
+	ld	(ARYTAB),hl
+	ld	hl,(FRETOP)	; Where to start moving
+	inc	hl	; One higher
+	ex	de,hl		; Into [D,E]
+	ld	hl,(SAVFRE)	; Last byte to move
+	ld	(FRETOP),hl	; Restore FRETOP from this
+MVBKVR:	call	DCOMPR	; Done?
+	ld	a,(de)	; Move byte down
+	ld	(bc),a
+	inc	de	; Increment pointers
+	inc	bc
+	jp	nz,MVBKVR
+	dec	bc	; Point to last var byte
+	ld	h,b	; [H,L]=last var byte
+	ld	l,c
+	ld	(STREND),hl	; This is new end
+	ld	hl,(CHNLIN)	; Get CHAIN line #
+	ld	a,h	; Test for zero
+	or	l
+	ex	de,hl		; Put in [D,E]
+	ld	hl,(TXTTAB)	; Get prog start in [H,L]
+	dec	hl	; Point at zero before program
+	jp	z,NEWSTT	; line #=0, go...
+	call	FNDLIN	; Try to find destination line
+	jp	nc,USERR	; Not there...
+	dec	bc	; Point to zero on previous line
+	ld	h,b	; Make text pointer for NEWSTT
+	ld	l,c
+	jp	NEWSTT	; Bye...
+COMMON:	jp	DATA
+	PAGE
+	SUBTTL	WRITE
+	EXTRN	FINPRT
+	EXTRN	FOUT,STRLIT,STRPRT,OUTDO,FACLO
+	PUBLIC	WRITE
+WRITE:	
+	EXTRN	FILGET
+	ld	c,MD.SQO	; Setup output file
+	call	FILGET
+WRTCHR:	dec	hl
+	call	CHRGTR	; Get another character
+	jp	z,WRTFIN	; Done with WRITE
+WRTMLP:	call	FRMEVL	; Evaluate formula
+	push	hl	; Save the text pointer
+	call	GETYPR	; See if we have a string
+	jp	z,WRTSTR	; We do
+	call	FOUT	; Convert to a string
+	call	STRLIT	; Literalize string
+	ld	hl,(FACLO)	; Get pointer to string
+	inc	hl	; Point to address field
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)
+	ld	a,(de)	; Is number positive?
+	cp	' '	; Test
+	jp	nz,WRTNEG	; No, must be negative
+	inc	de
+	ld	(hl),d
+	dec	hl
+	ld	(hl),e
+	dec	hl
+	dec	(hl)	; Adjust length of string
+WRTNEG:	call	STRPRT	; Print the number
+NXTWRV:	pop	hl	; Get back text pointer
+	dec	hl	; Back up pointer
+	call	CHRGTR	; Get next char
+	jp	z,WRTFIN	; end
+	cp	59	; Semicolon?
+	jp	z,WASEMI	; Was one
+	call	SYNCHR
+	defb	2ch	; Only possib left is comma
+	dec	hl	; to compensate for later CHRGET
+WASEMI:	call	CHRGTR	; Fetch next char
+	ld	a,2ch	; put out comma
+	call	OUTDO
+	jp	WRTMLP	; Back for more
+WRTSTR:	ld	a,34	; put out double quote
+	call	OUTDO	; Send it
+	call	STRPRT	; print the string
+	ld	a,34	; Put out another double quote
+	call	OUTDO	; Send it
+	jp	NXTWRV	; Get next value
+WRTFIN:	
+	EXTRN	CMPFBC,CRDO,PTRFIL
+	push	hl	; Save text pointer
+	ld	hl,(PTRFIL)	; See if disk file
+	ld	a,h
+	or	l
+	jp	z,NTRNDW	; No
+	ld	a,(hl)	; Get file mode
+	cp	MD.RND	; Random?
+	jp	nz,NTRNDW	; NO
+	call	CMPFBC	; See how many bytes left
+	ld	a,l	; do subtract
+	sub	e
+	ld	l,a
+	ld	a,h
+	sbc	a,d
+	ld	h,a
+CRLFSQ	defl 2	; Number of bytes in CR/LF sequence
+	ld	de,0-CRLFSQ	; Subtract bytes in <cr>
+	add	hl,de
+	jp	nc,NTRNDW	; Not enough, give error eventually
+NXTWSP:	ld	a,' '	; Put out spaces
+	call	OUTDO	; Send space
+	dec	hl	; Count down
+	ld	a,h	; Count down
+	or	l
+	jp	nz,NXTWSP
+NTRNDW:	pop	hl	; Restore [H,L]
+	call	CRDO	; Do crlf
+	jp	FINPRT
+	end
+

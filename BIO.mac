@@ -1,0 +1,441 @@
+	.symlen 6
+	SUBTTL	Common file for BASIC interpreter
+	.SALL
+
+CONTO	defl 15	; CHARACTER TO SUPRESS OUTPUT (USUALLY CONTROL-O)
+DBLTRN	defl 0	; FOR DOUBLE PRECISION TRANSCENDENTALS
+	IF2
+
+	.printx	/EXTENDED/
+
+
+	.printx	/LPT/
+
+	.printx	/CPM DISK/
+
+
+	.printx	/Z80/
+
+	.printx	/FAST/
+
+	.printx	/5.0 FEATURES/
+
+	.printx	/ANSI COMPATIBLE/
+	ENDIF
+
+CLMWID	defl 14	; MAKE COMMA COLUMNS FOURTEEN CHARACTERS
+DATPSC	defl 128	; NUMBER OF DATA BYTES IN DISK SECTOR
+LINLN	defl 80	; TERMINAL LINE LENGTH
+LPTLEN	defl 132
+BUFLEN	defl 255	; LONG LINES
+NAMLEN	defl 40	; MAXIMUM LENGTH NAME -- 3 TO 127
+
+NUMLEV	defl 0*20+19+2*5	; NUMBER OF STACK LEVELS RESERVED
+			; BY AN EXPLICIT CALL TO GETSTK
+
+STRSIZ	defl 4
+
+STRSIZ	defl 3
+NUMTMP	defl 3	; NUMBER OF STRING TEMPORARIES
+
+NUMTMP	defl 10
+
+MD.RND	defl 3	; THE MODE NUMBER FOR RANDOM FILES
+MD.SQI	defl 1	; THE MODE NUMBER FOR SEQUENTIAL INPUT FILES
+			; NEVER WRITTEN INTO A FILE
+MD.SQO	defl 2	; THE MODE FOR SEQUENTIAL OUTPUT FILES
+			; AND PROGRAM FILES
+CPMWRM	defl 0	; CP/M WARM BOOT ADDR
+CPMENT	defl CPMWRM+5	; CP/M BDOS CALL ADDR
+	CSEG
+TRUROM	defl 0
+	PAGE
+	TITLE	BIO BASIC Interpreter I/O routines/WHG/PGA/MBM...
+	SUBTTL	OUTDO, OUTCON - CHARACTER OUTPUT
+; Microsoft BASIC has a number of primitive I/O routines:
+;	OUTDO (either CALL or RST) prints char in [A] no registers affected
+;		to either terminal or disk file or printer depending
+;		flags:
+;			PRTFLG if non-zero print to printer
+;			PTRFIL if non-zero print to disk file pointed to
+;				by PTRFIL
+;
+;	INCHR	input a character into [A] condiation codes destroyed.
+;		input from disk file if PTRFIL non-zero.
+;
+;	CRDO	Print a carriage return sequence on either
+;		terminal or printer or disk file depending on flags
+;		See OUTDO above. See below code for register use
+	EXTRN	PPSWRT
+	PUBLIC	INCHR,OUTDO,FININL,CRFIN
+OUTDO:	push	af
+	push	hl
+	EXTRN	PTRFIL
+	ld	hl,(PTRFIL)
+OUTCON:	
+	ld	a,h
+	or	l
+	EXTRN	FILOUT
+	jp	nz,FILOUT
+	pop	hl
+	EXTRN	PRTFLG
+LPTCOD:	ld	a,(PRTFLG)	; SEE IF WE WANT TO TALK TO LPT
+	or	a	; TEST BITS
+
+			; REGULAR OKIA DRIVER ONLY
+	jp	z,TTYCHR	; IF ZERO THEN NOT
+	pop	af	; GET BACK CHAR
+	push	af
+	cp	8	; BACKSPACE?
+	jp	nz,NTBKS2	; NO
+	ld	a,(LPTPOS)	; GET LPT POS
+	dec	a	; SUBTRACT ONE FROM PRINTER POSIT
+	ld	(LPTPOS),a	; CORRECT LPTPOS
+	pop	af	; GET BACK BACKSPACE
+	jp	LPTCHR	; SEND CHAR
+NTBKS2:	cp	9	; TAB
+	jp	nz,NOTABL	; NO
+MORSPL:	ld	a,32	; GET SPACE
+	call	OUTDO	; SEND IT
+	EXTRN	LPTPOS
+	ld	a,(LPTPOS)	; GET CURRENT PRINT POSIT
+	and	7	; AT TAB STOP?
+	jp	nz,MORSPL	; GO BACK IF MORE TO PRINT
+	pop	af	; POP OFF CHAR
+	ret		; RETURN
+NOTABL:	
+
+	pop	af	; GET CHAR BACK
+	push	af	; SAVE AGAIN
+	sub	13	; IF FUNNY CONTROL CHAR, (LF) DO NOTHING
+	jp	z,ZERLP1
+	jp	c,LPTCH1	; JUST PRINT CHAR
+	EXTRN	LPTSIZ
+	ld	a,(LPTSIZ)	; GET SIZE OF PRINTER
+	inc	a	; IS IT INFINITE?
+	ld	a,(LPTPOS)	; GET POSIT
+	jp	z,ZERLPT	; THEN DONT FOLD
+	push	hl	; SSAVE [H,L]
+	ld	hl,LPTSIZ	; MAX LENGTH
+	cp	(hl)	; SET CC'S
+	pop	hl	; THEN DO CRLF
+	call	z,PRINTW	; DO CRLF
+	jp	z,LPTCH1	; IF FORCED CR, LEAVE LPTPOS AT ZERO
+ZERLPT:	
+	cp	255	; MAX LENGTH?
+	jp	z,LPTCH1	; THEN JUST PRINT
+	inc	a	; INCREMENT POSIT
+ZERLP1:	ld	(LPTPOS),a
+LPTCH1:	pop	af	; GET CHAR BACK
+LPTCHR:	push	af	; SAVE BACK AGAIN
+	push	bc	; SAVE [B,C]
+	push	de	; SAVE [D,E]
+	push	hl
+	ld	c,a	; CPM WANTS CHAR IN [C]
+	PUBLIC	LPTOUT
+LPTOUT:	call	0	; PRINTER ROUTINE ADDRESS STORED HERE
+	pop	hl	; RESTORE REGS
+	pop	de
+	pop	bc
+	pop	af	; RESTORE CHAR
+	ret		; RETURN FROM OUTCHR
+	PUBLIC	FINLPT
+FINLPT:	xor	a	; RESET PRINT FLAG SO
+	ld	(PRTFLG),a	; OUTPUT GOES TO TERMINAL
+	ld	a,(LPTPOS)	; GET CURRENT LPT POSIT
+	or	a	; ON LEFT HAND MARGIN ALREADY?
+	ret	z		; YES, RETURN
+PRINTW:	ld	a,13	; PUT OUT CRLF
+	call	LPTCHR
+	ld	a,10
+	call	LPTCHR
+	xor	a	; ZERO LPTPOS
+	ld	(LPTPOS),a
+	ret		; DONE
+	PUBLIC	TTYCHR
+TTYCHR:	
+	EXTRN	CNTOFL
+	ld	a,(CNTOFL)
+	or	a
+	jp	nz,PPSWRT	; NO, DO OUTPUT
+	pop	af	; GET THE CHARACTER
+	push	bc
+	push	af	; AND SAVE IT AGAIN
+	cp	8	; BACKSPACE?
+	jp	nz,NTBKS1	; NO
+	ld	a,(TTYPOS)	; GET TTY POS
+	or	a	; SET CC'S
+	jp	z,MORSPR	; RETURN
+	dec	a	; DECRMENT POSIT BY ONE
+	ld	(TTYPOS),a	; CORRECT TTYPOS
+			; CORRECT TTYPOS
+	ld	a,8	; GET BACK BACKSPACE CHAR
+	jp	TRYOUT	; SEND IT
+NTBKS1:	cp	9	; OUTPUTTING TAB?
+	jp	nz,NOTAB	; NO.
+MORSP:	ld	a,32	; GET SPACE CHAR
+	call	OUTDO	; CALL OUTCHR RECURSIVELY (!)
+	ld	a,(TTYPOS)	; GET CURRENT PRINT POS.
+	and	7	; AT TAB STOP YET??
+	jp	nz,MORSP	; NO, KEEP SPACING
+MORSPR:	pop	af	; RESTORE CURRENT CHAR (TAB)
+	pop	bc	; GET [B,C] BACK
+	ret		; ALL DONE
+NOTAB:	
+	cp	32	; IS THIS A MEANINGFUL CHARACTER?
+	jp	c,TRYOUT	; IF IT'S A NON-PRINTING CHARACTER
+	EXTRN	LINLEN
+	ld	a,(LINLEN)
+	ld	b,a	; [B]=LINE LENGTH
+			; DON'T INCLUDE IT IN TTYPOS
+	ld	a,(TTYPOS)	; SEE IF PRINT HEAD IS AT THE END OF THE LINE
+	inc	b	; IS WIDTH 255?
+	jp	z,INCTPS	; YES, JUST INC TTYPOS
+	dec	b	; CORRECT [B]
+	cp	b
+	PUBLIC	LINPT1
+LINPT1	defl $-1
+	call	z,CRDO	; TYPE CRLF AND SET TTYPOS AND [A]=0 IF SO
+	jp	z,TRYOUT	; IF FORCED CRLF, LEAVE TTYPOS AT ZERO
+INCTPS:	
+	cp	255	; HAVE WE HIT MAX #?
+	jp	z,TRYOUT	; THEN LEAVE IT THERE
+	inc	a	; INCREMENT TTYPOS SINCE WE'RE
+			; GOING TO PRINT A CHARACTER.
+	EXTRN	TTYPOS
+	ld	(TTYPOS),a	; STORE NEW PRINT HEAD POSITION
+			; STORE NEW PRINT HEAD POSITION
+TRYOUT:	
+	pop	af	; GET CHAR OFF STACK
+	pop	bc	; RESTORE [B,C]
+	push	af	; SAVE PSW BACK
+	PUBLIC	NOPRIN
+NOPRIN:			;  END OF PHLZ80 OFF
+	pop	af	; GET CHARACTER BACK
+
+	push	af	; THEN SAVE BACK
+	push	bc	; SAVE ALL REGS
+	push	de
+	push	hl
+	ld	c,a	; CPM WANTS CHAR IN [C]
+	PUBLIC	CONOUT
+CONOUT:	call	0	; CPM (BIOS) ENTRY POINT
+	pop	hl	; RESTORE REGS
+	pop	de
+	pop	bc
+	pop	af	; RESTORE CHAR
+	ret		; RETURN FROM OUTCHR
+
+
+
+
+	PAGE
+	SUBTTL	INCHR, TRYIN - CHARACTER INPUT ROUTINES
+	PUBLIC	INCHR,TRYIN
+INCHR:	
+	push	hl
+	ld	hl,(PTRFIL)
+	ld	a,h
+	or	l
+	jp	z,NOTFLC	; GET CHARACTER FROM TERMINAL
+	EXTRN	INDSKC
+	call	INDSKC	; READ A CHARACTER
+	EXTRN	POPHRT
+	jp	nc,POPHRT	; RETURN WITH CHARACTER
+	push	bc	; SAVE ALL REGISTERS
+	push	de
+	push	hl
+	EXTRN	PRGFIN
+	call	PRGFIN	; CLOSE THE FILE
+	pop	hl
+	pop	de
+	pop	bc
+	EXTRN	CHNRET
+	EXTRN	CHNFLG
+	ld	a,(CHNFLG)	; CHAIN IN PROGRESS?
+	or	a	; TEST..
+	jp	nz,CHNRET	; YES, PERFORM VARIABLE BLOCK TRANSFER, ETC.
+	EXTRN	LSTFRE
+	ld	a,(LSTFRE)	; RUN IT OR NOT?
+	or	a
+	EXTRN	NEWSTT
+	ld	hl,NEWSTT
+	ex	(sp),hl
+	EXTRN	RUNC
+	jp	nz,RUNC	; RUN IT
+	ex	(sp),hl
+	push	bc	; PRESERVE REGISTERS
+	push	de
+	EXTRN	REDDY
+	ld	hl,REDDY	; PRINT PROMPT "OK"
+	EXTRN	STROUT
+	call	STROUT
+	pop	de
+	pop	bc
+	xor	a
+	pop	hl
+	ret
+NOTFLC:	pop	hl
+TRYIN:	
+	PUBLIC	INCHRI
+INCHRI:	
+	push	bc	; SAVE REGS
+	push	de
+	push	hl
+	PUBLIC	CONIN
+CONIN:	call	0	; CHANGED TO CALL CI
+	pop	hl	; RESTORE REGS
+	pop	de
+	pop	bc
+	PUBLIC	CNLCB2
+CNLCB2	defl $-1	; CONSOLE COMMAND CHANGE LOC
+
+INEXIT:	
+	and	127	; GET RID OF PARITY BIT
+	cp	CONTO	; IS IT SUPRESS OUTPUT?
+	ret	nz
+	ld	a,(CNTOFL)
+	or	a	; ARE WE SUPRESSING OUTPUT?
+	EXTRN	CTROPT
+	call	z,CTROPT	; THEN PRINT CONTROL-O NOW.
+	cpl		; COMPLEMENT ITS STATE
+	ld	(CNTOFL),a	; SAVE BACK
+	or	a	; SEE IF WE ARE TURNING OUTPUT ON.
+	jp	z,CTROPT	; PRINT THE ^O
+	xor	a	; RETURN WITH NULL WHICH IS ALWAYS IGNORED
+
+	ret
+
+			; FOR SOME REASON SBC DOENT HAVE CST
+			; TERMINATES RSHACK
+	PAGE
+	SUBTTL	CRDO Put out a carriage return and associated routines
+; CRDO returns with all registers except [A]
+; preserved, [A]=0, Zero CC set, Carry reset.
+
+	PUBLIC	CRDONZ
+; CRDONZ Only does a CR if TTYPOS is not Zero.
+; In other words, only print a carriage return when not at left margin.
+CRDONZ:	
+	ld	a,(TTYPOS)	; GET CURRENT TTYPOS
+			; GET CURRENT TTYPOS
+	or	a	; SET CC'S
+	ret	z		; IF ALREADY ZERO, RETURN
+	jp	CRDO	; DO CR
+FININL:	ld	(hl),0	; PUT A ZERO AT THE END OF BUF
+	EXTRN	BUFMIN
+	ld	hl,BUFMIN	; SETUP POINTER
+			; DON'T PUT CR/LF OUT TO LOAD FILE
+	PUBLIC	CRDO
+CRDO:	
+	ld	a,13
+	call	OUTDO
+	ld	a,10
+	PUBLIC	CRFINO
+CRFINO:	call	OUTDO
+CRFIN:	
+	push	hl	; SAVE [H,L]
+	ld	hl,(PTRFIL)	; SEE IF OUTPUTTING TO DISK
+	ld	a,h	; IF SO, PTRFIL .NE. 0
+	or	l	; ...
+	pop	hl	; RESTORE [H,L]
+	jp	z,CRCONT	; NOT DISK FILE, CONTINUE
+	xor	a	; CRFIN MUST ALWAYS RETURN WITH A=0
+	ret		; AND CARRY=0.
+CRCONT:	
+	ld	a,(PRTFLG)	; GOING TO PRINTER?
+	or	a	; TEST
+	jp	z,NTPRTR	; NO
+	xor	a	; DONE, RETURN
+	ld	(LPTPOS),a	; ZERO POSITON
+	ret
+NTPRTR:	
+	xor	a	; SET TTYPOS=0
+	ld	(TTYPOS),a
+	EXTRN	NULCNT
+	ld	a,(NULCNT)	; GET NUMBER OF NULLS
+PRTNUL:	dec	a
+	ret	z		; ALL NULLS DONE [A]=0
+			; SOME ROUTINES DEPEND ON CRDO
+			; AND CRFIN RETURNING [A]=0 AND Z TRUE
+	push	af	; SAVE THE COUNT
+	xor	a	; [A]= A NULL
+	call	OUTDO	; SEND IT OUT
+	pop	af	; RESTORE THE COUNT
+	jp	PRTNUL	; LOOP PRINTING NULLS
+	PUBLIC	ISCNTC
+ISCNTC:	
+
+	EXTRN	CSTS
+	push	bc	; SAVE REGS
+	push	de
+	push	hl
+
+	PUBLIC	CONSTS
+CONSTS:	call	CSTS	; GET CONSOLE STATUS
+	pop	hl
+	pop	de
+	pop	bc
+	or	a	; SET CC'S
+	ret	z		; 0=FALSE - NO CHARACTER TYPED
+			; IF NONE, RETURN
+	PUBLIC	CNTCCN
+CNTCCN:	
+	call	INCHRI	; READ THE CHARACTER THAT WAS PRESENT
+	cp	13h	; PAUSE? (^S)
+	call	z,INCHRI	; IF PAUSE, READ NEXT CHAR
+	ld	(CHARC##),a	; SAVE CHAR IN THE BUFFER
+	cp	3	; ^C?
+	EXTRN	CTRLPT
+	call	z,CTRLPT	; TYPE ^C
+	EXTRN	STOP
+	jp	STOP
+	PUBLIC	INKEY,CHARCG
+	EXTRN	DSCPTR,PUTNEW,REDDY,FACLO,VALTYP,STRIN1,CHARC,SETSTR
+	EXTRN	CHRGTR
+INKEY:	
+	call	CHRGTR
+	push	hl	; SAVE THE TEXT POINTER
+	call	CHARCG	; GET CHARC AND CLEAR IF SET
+	jp	nz,BUFCIN
+MRCHRI:	
+CONST3::	call	0
+	or	a	; SET NON-ZERO IF CHAR THERE
+	jp	z,NULRT	; NO, RETURN NULL STRING
+; GET CHAR IF ONE,
+;****SOME VERSIONS ALREADY HAVE CHAR AND DONT WANT THIS CODE ***
+;****SO THEY SHOULD TURN ON CHSEAT TO TURN OFF READS
+	call	INCHRI
+BUFCIN:	push	af
+	call	STRIN1	; MAKE ONE CHAR STRING
+	pop	af
+	ld	e,a	; CHAR TO [D]
+	call	SETSTR	; STUFF IN DESCRIPTOR AND GOTO PUTNEW
+
+NULRT:	ld	hl,REDDY-1
+	ld	(FACLO),hl
+	ld	a,3
+	ld	(VALTYP),a
+	pop	hl
+	ret
+
+CHARCG::	ld	a,(CHARC)	; GET SAVED CHAR
+	or	a	; IS THERE ONE?
+	ret	z		; NO, DONE
+	push	af	; SAVE CHAR
+	xor	a	; CLEAR IT
+	ld	(CHARC),a	; BY STORING ZERO
+	pop	af	; RESTORE CHAR AND NON-ZERO CC'S
+	ret
+	PUBLIC	OUTCH1
+OUTCH1:	
+	call	OUTDO	; OUTPUT THE CHAR
+	cp	10	; WAS IT A LF?
+	ret	nz		; NO, RETURN
+	ld	a,13	; DO CR
+	call	OUTDO
+	call	CRFIN
+	ld	a,10	; RESTORE CHAR (LF)
+	ret
+	end
+

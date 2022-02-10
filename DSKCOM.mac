@@ -1,0 +1,860 @@
+	.symlen 6
+	SUBTTL	Common file for BASIC interpreter
+	.SALL
+
+CONTO	defl 15	; CHARACTER TO SUPRESS OUTPUT (USUALLY CONTROL-O)
+DBLTRN	defl 0	; FOR DOUBLE PRECISION TRANSCENDENTALS
+	IF2
+
+	.printx	/EXTENDED/
+
+
+	.printx	/LPT/
+
+	.printx	/CPM DISK/
+
+
+	.printx	/Z80/
+
+	.printx	/FAST/
+
+	.printx	/5.0 FEATURES/
+
+	.printx	/ANSI COMPATIBLE/
+	ENDIF
+
+CLMWID	defl 14	; MAKE COMMA COLUMNS FOURTEEN CHARACTERS
+DATPSC	defl 128	; NUMBER OF DATA BYTES IN DISK SECTOR
+LINLN	defl 80	; TERMINAL LINE LENGTH
+LPTLEN	defl 132
+BUFLEN	defl 255	; LONG LINES
+NAMLEN	defl 40	; MAXIMUM LENGTH NAME -- 3 TO 127
+
+NUMLEV	defl 0*20+19+2*5	; NUMBER OF STACK LEVELS RESERVED
+			; BY AN EXPLICIT CALL TO GETSTK
+
+STRSIZ	defl 4
+
+STRSIZ	defl 3
+NUMTMP	defl 3	; NUMBER OF STRING TEMPORARIES
+
+NUMTMP	defl 10
+
+MD.RND	defl 3	; THE MODE NUMBER FOR RANDOM FILES
+MD.SQI	defl 1	; THE MODE NUMBER FOR SEQUENTIAL INPUT FILES
+			; NEVER WRITTEN INTO A FILE
+MD.SQO	defl 2	; THE MODE FOR SEQUENTIAL OUTPUT FILES
+			; AND PROGRAM FILES
+CPMWRM	defl 0	; CP/M WARM BOOT ADDR
+CPMENT	defl CPMWRM+5	; CP/M BDOS CALL ADDR
+	CSEG
+TRUROM	defl 0
+	PAGE
+	TITLE	DSKCOM - - COMMON ROUTINES FOR DISK BASICS
+
+	EXTRN	CLSFIL,CONINT,DATOFS,DERBFN,DERRPE,ERROR,FILOU3,CHRGTR,CURLIN
+	EXTRN	INDSKB,INDSKC,NMLOFS,PRGFIL,SCRTCH,SNERR
+	EXTRN	FRMEQL,BUF
+	EXTRN	STRLT3,DERFOV
+	EXTRN	DATOFC,DERBFM,DIRTMP,DOASIG,DOCNVF,DSCTMP,ERRFDR,FCERR
+	EXTRN	FILPT1,FILPTR,FIN,FINBCK,FINPRT,FRCSTR,FRESTR,FRETOP
+	EXTRN	FRMEVL,GETBYT,GETSPA,GONE,GTBYTC,GTMPRT,INCHRI,LETCON
+	EXTRN	LINKER,LIST,LSTFRE,MAIN,MAXFIL,NEWSTT,NMLOFC,OMERR
+	EXTRN	PTRFIL,PTRGET,PUTNEW,READY,RUNC
+	EXTRN	SCCPTR
+
+	EXTRN	SAVSTK,STRINI,TXTTAB,VALTYP,VARTAB,VMOVFM,VMOVMF,ENDCON
+	EXTRN	GETYPR,SYNCHR,DCOMPR
+	PUBLIC	CLSALL,FILFRM,FILIDX,FILSCN,FIELD,PRGFLI,FILIND
+	PUBLIC	FILINP,FILGET,MKI$,MKS$,MKD$,CVI,CVS,CVD
+	PUBLIC	DLINE,PRGFL2,LRUN,LOAD,PRGFIN,MERGE,DIRDO,SAVE,CLOSE
+	PUBLIC	OKGETM
+	PUBLIC	RSET,LSET
+	PUBLIC	BINPSV
+	EXTRN	PROSAV,PROLOD
+	EXTRN	PROFLG
+; REVISION HISTORY
+;4/23/78	PGA	ALLOW # ON CLOSE
+;
+;8/6/79  PGA	IF ^C ON MBASIC FOO, DONT RETURN TO SYSTEM. SEE 'NOTINI'
+;6/27/80	PGA	FIX INPUT#1,D# SO IT USES FINDBL INSTEAD OF FIN
+;		AND THUS AVOIDS LOSING SIGNIFICANCE.
+;
+;%
+	SUBTTL	FILINP AND FILGET -- SCAN A FILE NUMBER AND SETUP PTRFIL
+
+FILINP:	ld	c,MD.SQI	; MUST BE SEQUENTIAL INPUT
+FILGET:	cp	'#'	; NUMBER SIGN THERE?
+	ret	nz		; NO, NOT DISK READER
+	push	bc	; SAVE EXPECTED MODE
+	call	FILSCN	; READ AND GET POINTER
+	pop	de	; [E]=FILE MODE
+	cp	e	; IS IT RIGHT?
+	jp	z,GDFILM	; GOOD FILE MODE
+	cp	MD.RND	; ALLOW STUFF WITH RANDOM FILES
+	jp	nz,DERBFM	; IF NOT, "BAD FILE MODE"
+GDFILM:	
+	call	SYNCHR
+	defb	44	; GO PAST THE COMMA
+FILSET:	ex	de,hl		; [D,E]=TEXT POINTER
+	ld	h,b	; SETUP PTRFIL
+	ld	l,c
+	ld	(PTRFIL),hl
+	ex	de,hl		; TEXT POINTER BACK INTO [H,L]
+	ret
+
+	PAGE
+	SUBTTL	FILSCN, FILFRM, AND FILIDX
+;
+; AT THIS ENTRY POINT [H,L] IS ASSUMED TO BE THE TEXT POINTER AND
+; A FILE NUMBER IS SCANNED
+;
+FILSCN:	dec	hl
+	call	CHRGTR
+	cp	'#'	; MAKE NUMBER SIGN OPTIONAL
+	call	z,CHRGTR	; BY SKIPPING IT IF THERE
+	call	FRMEVL	; READ THE FILE NUMBER INTO THE FAC
+;
+; AT THIS ENTRY POINT THE FAC HAS THE FILE NUMBER IN IT ALREADY
+;
+FILFRM:	call	CONINT	; GET THE FILE NUMBER INTO [A]
+;
+; AT THIS POINT IT IS ASSUMED THE FILE NUMBER IS IN [A]
+; THE FILE NUMBER IS RETURNED IN [E]
+; [D] IS SET TO ZERO. [H,L] IS SAVED.
+; [B,C] IS SET TO POINT AT THE FILE DATA BLOCK FOR FILE [E]
+; [A] GIVE THE MODE OF THE FILE AND ZERO IS SET  IF THE FILE IS
+; MODE ZERO (NOT OPEN).
+;
+FILIDX:	ld	e,a	; GET FILE NUMBER INTO [E]
+FILID2:	ld	a,(MAXFIL)	; IS THIS FILE # LEGAL?
+	cp	e
+	jp	c,DERBFN	; IF NOT, "BAD FILE NUMBER"
+	ld	d,0	; SETUP DOUBLE-BYTE OFFSET TO GET
+			; POINTER TO FILE DATA BLOCK
+	push	hl	; SAVE [H,L]
+	ld	hl,FILPTR	; POINT AT POINTER TABLE
+	add	hl,de	; ADD ON OFFSET TWICE FOR DOUBLE BYTE
+	add	hl,de	; ENTRIES
+	ld	c,(hl)	; PICK UP POINTER IN [B,C]
+	inc	hl
+	ld	b,(hl)
+	ld	a,(bc)	; GET MODE OF FILE INTO [A]
+	or	a	; SET ZERO IF FILE NOT OPEN
+	pop	hl	; RETRIEVE [H,L]
+	ret
+
+; GETPTR IS CALLED FROM VARPTR(#<EXPRESSION>)
+	PUBLIC	GETPTR
+GETPTR:	call	FILID2	; INDEX INTO FILE DATA BLOCK
+	ld	hl,DATOFC	; POINT TO DATA BLOCK
+	cp	MD.RND	; RANDOM FILE?
+	jp	nz,NTFIVD	; NO, USE NOTRRMAL FOOFFSET
+	ld	hl,0+FD.DAT##	; YES
+NTFIVD:	
+	add	hl,bc	; ADD START OF FILE DATA BLOCK
+	ex	de,hl		; RETURN IN [D,E]
+	ret
+	PAGE
+
+MKI$:	ld	a,2	; VALUE TYPE FOR INTEGER AND NUMBER
+			; OF CHARACTERS RESULT WILL NEED
+	defb	1	; SKIP NEXT TWO BYTES WITH "LXI B,"
+MKS$:	ld	a,4	; VALUE TYPE OF SINGLE PRECISION
+	defb	1	; SKIP NEXT TWO BYTES
+MKD$:	ld	a,8	; VALUE TYPE OF DOUBLE-PRECISION
+	push	af	; SAVE THE NUMBER OF BYTES OF
+			; STRING SPACE WE NEED
+	call	DOCNVF	; CONVERT FAC TO PROPER TYPE
+	pop	af	; GET THE NUMBER OF BYTES NEEDED
+	call	STRINI	; GET A PLACE FOR THE STRING DATA
+	ld	hl,(DSCTMP+1)	; POINT TO THE PLACE TO STORE THE DATA
+	call	VMOVMF	; MOVE THE FAC VALUE INTO THE STRING CREATION
+	jp	FINBCK	; FINISH UP THESE STRING FUNCTIONS
+
+CVI:	ld	a,1	; SET [A] TO BE VALTYP-1
+	defb	1	; SKIP THE NEXT TWO BYTES WITH "LXI B,"
+CVS:	ld	a,3	; ALSO SET [A] TO NUMBER OF CHARACTERS REQUIRED -1
+	defb	1	; SKIP THE NEXT TWO BYTES
+CVD:	ld	a,7	; DOUBLE PRECISION VALUE TYPE -1
+	push	af	; SAVE THE VALTYP
+	call	FRESTR	; MAKE SURE THE ARGUMENT IS A STRING
+			; AND GET A POINTER TO THE DESCRIPTOR
+	pop	af	; GET BACK NUMBER OF CHARACTERS REQUIRED-1
+	cp	(hl)	; MAKE SURE THE STRING IS LONGER THAN THAT
+	jp	nc,FCERR	; IF NOT, "ILLEGAL FUNCTION CALL"
+	inc	a	; [A]=TRUE VALUE TYPE
+	inc	hl
+	ld	c,(hl)	; [H,L]=POINTER AT STRING DATA
+	inc	hl	; TO BE MOVED INTO THE FAC
+	ld	h,(hl)
+	ld	l,c
+	ld	(VALTYP),a	; SETUP VALUE TYPE FOR MOVE
+			; AND FOR IDENTIFICATION
+	jp	VMOVFM	; MOVE IN THE STRING DATA
+
+	PAGE
+	SUBTTL	SETUP TO READ A SEQUENTIAL ITEM -- FILIND
+
+FILIND:	
+	call	GETYPR	; SEE IF INPUT IS STRING OR NUMBER
+	ld	bc,DOASIG	; RETURN ADDRESS TO SETUP [FAC]
+CON1	defl 0+(44*256)+32
+	ld	de,CON1	; SETUP TERMINATORS SPACE AND COMMA
+	jp	nz,INPDOR	; IF NUMERIC, GO READ THE FILE
+	ld	e,d	; MAKE BOTH TERMINATORS COMMA
+	jp	INPDOR	; GO READ THE FILE
+	PAGE
+	SUBTTL	LINE INPUT & READ CODE FOR ITEM FETCHING FROM SEQUENTIAL INPUT FILES
+
+DLINE:	call	FILINP	; GET FILE NUMBER SET UP
+	call	PTRGET	; READ STRING TO STORE INTO
+	call	FRCSTR	; MAKE SURE IT WAS A STRING
+	ld	bc,FINPRT	; RESET TO CONSOLE WHEN DONE READING
+	push	bc	; SAVE ON STACK
+	push	de	; SAVE POINTER AT VARIABLE
+	ld	bc,LETCON	; GOOD RETURN ADDRESS FOR ASSIGNMENT
+	xor	a	; SET A=0 FOR STRING VALUE TYPE
+	ld	d,a	; ZERO OUT BOTH TERMINATORS
+	ld	e,a
+INPDOR:	push	af	; SAVE VALUE TYPE
+	push	bc	; SAVE RETURN ADDRESS
+	push	hl	; SAVE POINTER AT DATA COMING IN
+			; A DUMMY POINTER AT BUFMIN
+NOTNWT:	call	INDSKC	; READ A CHARACTER
+	jp	c,DERRPE	; READ PAST END ERROR IF EOF
+	cp	' '	; SKIP LEADING SPACES
+	jp	nz,NOTSPC	; EXCEPT FOR LINE INPUT
+	inc	d	; CHECK FOR LINEINPUT
+	dec	d
+	jp	nz,NOTNWT	; SKIP ANY NUMBER
+NOTSPC:	cp	34	; QUOTED STRING COMING IN?
+	jp	nz,NOTQTE
+	ld	b,a	; SAVE THE QUOTE
+	ld	a,e	; MUST BE INPUT OF A STRING
+	cp	44	; WHICH HAS [E]=44
+	ld	a,b	; QUOTE BACK INTO [A]
+	jp	nz,NOTQTE
+	ld	d,b	; TERMINATORS ARE QUOTES ONLY
+	ld	e,b
+	call	INDSKC	; READ PAST QUOTATION
+	jp	c,QUITSI	; IF EOF, ALL DONE
+NOTQTE:	
+	ld	hl,BUF	; BUFFER FOR DATA
+	ld	b,255	; MAXIMUM NUMBER OF CHARACTERS (255)
+LOPCRS:	ld	c,a	; SAVE CHARACTER IN [C]
+	ld	a,d	; CHECK FOR QUOTED STRING
+	cp	34
+	ld	a,c	; RESTORE CHARACTER
+	jp	z,NOTQTL	; DON'T IGNORE CR OR STOP ON LF
+	cp	13	; CR?
+	push	hl	; SAVE DEST PTR. ON STACK
+	jp	z,ICASLF	; EAT LINE FEED IF ONE
+	pop	hl	; RESTORE DEST. PTR.
+	cp	10	; LF?
+	jp	nz,NOTQTL	; NO, TEST OTHER TERMINATORS
+	ld	c,a	; SAVE CURRENT CHAR
+	ld	a,e	; GET TERMINATOR 2
+	cp	2ch	; CHECK FOR COMMA (UNQUOTED STRING)
+	ld	a,c	; RESTORE ORIG CHAR
+	call	nz,STRCHR	; IF NOT, STORE LF (?)
+	call	INDSKC	; GET NEXT CHAR
+	jp	c,QUITSI	; IF EOF, ALL DONE.
+	cp	13	; IS IT A CR?
+	jp	nz,NOTQTL	; IF NOT SEE IF STORE NORMALLY
+	ld	a,e	; GET TERMINATOR
+	cp	' '	; IS IT NUMERIC INPUT?
+	jp	z,LPCRGT	; IF SO, IGNORE CR, DONT PUT IN BUFFER
+	cp	44	; IS IT NON-QUOTED STRING (TERM=,)
+	ld	a,13	; GET BACK CR.
+	jp	z,LPCRGT	; IF SO, IGNORE CR.
+NOTQTL:	or	a	; IS CHAR ZERO
+	jp	z,LPCRGT	; ALWAYS IGNORE, AS IT IS TERMINATOR
+			; FOR STRLIT (SEE QUIT2B)
+	cp	d	; TERMINATOR ONE?
+	jp	z,QUITSI	; STOP THEN
+	cp	e	; TERMINATOR TWO?
+	jp	z,QUITSI
+	call	STRCHR	; SAVE THE CHAR
+LPCRGT:	call	INDSKC	; READ ANOTHER CHARACTER
+	jp	nc,LOPCRS	; IF NOT, CHECK AS TERMINATOR
+QUITSI:	push	hl	; SAVE PLACE TO STUFF ZERO
+	cp	34	; STOPPED ON QUOTE?
+	jp	z,MORSPC	; DON'T SKIP SPACES THEN
+			; BUT DO SKIP FOLLOWING COMMA OR
+			; CRLF THOUGH
+	cp	' '	; STOPPED ON SPACE?
+	jp	nz,NOSKCR	; NO, DON'T SKIP SPACES
+			; OR ANY FOLLOWING COMMAS OR CRLFS EITHER
+MORSPC:	call	INDSKC	; READ SPACES
+	jp	c,NOSKCR	; EOF, ALL DONE.
+	cp	' '
+	jp	z,MORSPC
+	cp	44	; COMMA?
+	jp	z,NOSKCR	; OK, SKIP IT
+	cp	13	; CARRIAGE RETURN?
+	jp	nz,BAKUPT	; BACK UP PAST THIS CHARACTER
+ICASLF:	
+	call	INDSKC	; READ ANOTHER
+	jp	c,NOSKCR	; EOF, ALL DONE.
+	cp	10	; LINE FEED?
+	jp	z,NOSKCR	; OK, SKIP IT TOO
+BAKUPT:	ld	hl,(PTRFIL)	; GO TO NUMBER OF CHARATERS
+	ld	bc,0+NMLOFS
+	add	hl,bc
+	inc	(hl)	; BACK UP BY INCREMENTING CHARACTER COUNT
+NOSKCR:	pop	hl	; GET BACK PLACE TO STORE TERMINATOR
+QUIT2B:	ld	(hl),0	; STORE THE TERMINATOR
+	ld	hl,BUF-1	; ITEM IS NOW STORED AT THIS POINT +1
+	ld	a,e	; WAS IT A NUMERIC INPUT?
+	sub	' '	; IF SO, [E]=" "
+	jp	z,NUMIMK	; USE FIN TO SCAN IT
+	EXTRN	STRLT2
+	ld	b,d	; SET [B]=44 IF SCANNING UNQUOTED STRING
+	ld	d,0
+	call	STRLT2
+	pop	hl	; GET BACK [H,L]
+	ret		; DO ASSIGNMENT
+
+NUMIMK:	call	GETYPR	; GET TYPE OF NUMERIC VARIABLE BEING READ
+	push	af	; SAVE IT
+	call	CHRGTR	; READ FIRST CHARACTER
+	pop	af	; RESTORE TYPE OF VARIABLE
+	push	af	; SAVE BACK
+	call	c,FIN	; SINGLE PRECISION INPUT
+	pop	af	; GET BACK TYPE OF VAR
+	EXTRN	FINDBL
+	call	nc,FINDBL	; DOUBLE PRECISION INPUT
+	pop	hl	; GET [H,L]
+	ret		; DO THE ASSIGNMENT
+
+STRCHR:	or	a	; TRYING TO STORE NULL BYTE
+	ret	z		; RETURN, DONT STORE IT
+	ld	(hl),a	; STORE THE CHARACTER
+	inc	hl
+	dec	b	; 128 YET?
+	ret	nz		; MORE SPACE IN BUFFER, RETURN
+	pop	bc	; GET RID OF SUPERFLUOUS STACK ENTRY
+	jp	QUIT2B	; SPECIAL QUIT
+
+	PAGE
+PRGFLI:	ld	d,MD.SQI	; SEQUENTIAL INPUT MODE
+PRGFL2:	xor	a	; INTERNAL FILE NUMBER IS ALWAYS ZERO
+	jp	PRGFIL	; SCAN FILE NAME AND DISK NUMMER
+			; AND DO THE RIGHT THING USING MD.KIL
+			; AS A FLAG
+
+LRUN:	
+LRUN2::		; SET NON ZERO TO FLAG "RUN" COMMAND
+LOAD:	xor	a	; FLAG ZERO FOR "LOAD"
+	push	af	; SAVE "RUN"/"LOAD" FLAG
+	call	PRGFLI	; FIND THAT FILE AND SETUP FOR
+			; USING INDSKC SUBROUTINE
+	ld	a,(MAXFIL)	; SAVE THE NUMBER OF FILES
+	ld	(LSTFRE+1),a	; SINCE WE MAKE IT LOOK LIKE ZERO
+			; SO ,R OPTION CAN LEAVE FILES
+			; OPEN
+	dec	hl	; SEE IF NO RUN OPTION
+	call	CHRGTR
+	jp	z,NOTRNL	; NO, JUST LOAD
+	call	SYNCHR
+	defb	44	; GOTTA HAVE A COMMA
+	call	SYNCHR
+	defb	'R'	; ONLY OPTION IS RUN
+	jp	nz,SNERR	; AND THAT BETTER BE THE END
+	pop	af	; GET RID OF "RUN"/"LOAD" FLAG
+	PUBLIC	CHNENT
+CHNENT:	
+	xor	a	; SO FILES AREN'T CLOSED
+	ld	(MAXFIL),a	; PRETEND THERE AREN'T ANY
+	defb	0f6h	; FLAG RUN WITH NON-ZERO
+NOTRNL:	pop	af	; FLAG NON-RUN WITH ZERO
+	ld	(LSTFRE),a
+	ld	hl,DIRTMP
+	ld	(hl),0
+	ld	(FILPTR),hl	; MESS UP POINTER AT FILE ZERO
+	call	SCRTCH	; WIPE OUT OLD STUFF
+	ld	a,(LSTFRE+1)	; RESTORE MAXFIL
+	ld	(MAXFIL),a	; THAT WAS KLUDGED
+	ld	hl,(FILPT1)
+	ld	(FILPTR),hl	; RESTORE BACK TO NORMAL
+	ld	(PTRFIL),hl	; PTRFIL GOT ZEROED SO FIX IT TOO
+; BELOW IS FIX (TO LABEL NOTINI) SO THAT IF ^C DURING MBASIC FOO, WONT EXIT TO SYSTEM
+	ld	hl,(CURLIN)	; GET LINE NUMBER
+	inc	hl	; SEE IF IN INITIALIZATION
+	ld	a,h
+	and	l
+	inc	a
+	jp	nz,NOTINI	; NO
+	ld	(CURLIN),hl	; SAVE DIRECT LINE NUMBER
+NOTINI:	
+	call	INDSKC	; READ THE FIRST CHARACTER
+	jp	c,MAIN	; ALL DONE IF NOTHING IN FILE
+	cp	254	; IS THIS A PROTECTED FILE?
+	jp	nz,NTPROL	; NO
+	ld	(PROFLG),a	; SET PROTECTED FILE
+	jp	BINLOD	; DO BINARY LOAD
+NTPROL:	
+	inc	a	; IS IT A BINARY FILE?
+	jp	nz,MAINGO	; NO, SINCE PTRFIL IS NON-ZERO
+			; INCHR WILL USE INDSKC INSTEAD OF POLLING
+			; THE TERMINAL
+			; WHEN EOF IS HIT PTRFIL WILL BE RESTORED
+			; AND LSTFRE WILL BE USED AS A FLAG
+			; TO INDICATE WHETHER TO RUN THE
+			; LOADED PROGRAM
+;
+; TIME FOR A BINARY LOAD.
+; AFTER THE LOAD, THE FILE IS LINKED TOGETHER
+; LSTFRE IS USED AS A FLAG WHETHER TO RUN OR NOT
+;
+BINLOD:	ld	hl,(TXTTAB)	; GET PLACE TO START STORING INTO
+LPBLDR:	ex	de,hl		; SEE IF THERE IS ROOM TO SPARE
+	ld	hl,(FRETOP)
+	ld	bc,65450        ; 0+65536-86
+	add	hl,bc
+	call	DCOMPR
+	ex	de,hl
+	jp	c,OUTLOD	; ERROR AND WIPE OUT PARTIAL GARBAGE
+			; UNLINKED!! NO ZEROES AT THE END!!
+	call	INDSKB	; READ THE A DATA BYTE
+			; THIS IS SEMI-WEAK SINCE MEMORY
+			; IS LEFT IN A BAD BAD STATE
+			; IF AN I/O ERROR OCCURS
+	ld	(hl),a	; STORE BYTE
+	inc	hl	; INCRMENT POINTER
+	jp	nc,LPBLDR	; READ THE NEXT CHAR
+	ld	(VARTAB),hl	; SAVE END TEMP FOR DECODING
+	ld	a,(PROFLG)	; IS THIS A PROTECTED FILE?
+	or	a	; SET CC'S
+	call	nz,PROLOD	; TRANSLATE TO GOOD STUFF
+	call	LINKER	; FIX THE LINKS
+	inc	hl	; WHEN LINKER RETURNS, [H,L]
+	inc	hl	; POINTS TO DOUBLE ZERO
+	ld	(VARTAB),hl	; UPDATE [VARTAB]
+	ld	hl,MAXFIL	; ONLY CLOSE FILE ZER0
+	ld	a,(hl)
+	ld	(LSTFRE+1),a
+	ld	(hl),0
+	call	RUNC	; SETUP ARYTAB, STREND
+	ld	a,(LSTFRE+1)	; RESTORE NUMBER OF FILES
+	ld	(MAXFIL),a
+	EXTRN	CHNFLG,CHNRET
+	ld	a,(CHNFLG)	; CHAIN IN PROGRESS
+	or	a	; TEST
+	jp	nz,CHNRET	; YES, GO BACK TO CHAIN CODE
+	ld	a,(LSTFRE)	; RUN OR NOT?
+	or	a
+	jp	z,READY
+	jp	NEWSTT
+
+PRGFIN:	call	FINPRT	; ZERO PTRFIL
+	call	CLSFIL	; CLOSE FILE ZERO
+	jp	GTMPRT	; REFETCH TEXT POINTER
+OUTLOD::	call	SCRTCH
+	jp	OMERR
+MERGE:	pop	bc	; ELIMINATE NEWSTT RETURN
+	call	PRGFLI	; READ THE NAME AND DISK
+	dec	hl	; MUST END THERE
+	call	CHRGTR
+	jp	z,OKGETM	; READ THE FILE
+	call	PRGFIN	; CLOSE OUT TIME
+	jp	SNERR	; AND "SYNTAX ERROR"
+OKGETM:	xor	a	; NO RUN OPTION WITH "MERGE"
+	ld	(LSTFRE),a	; SET UP THE FLAG
+	call	INDSKC	; READ FROM [PTRFIL] FILE
+	jp	c,MAIN	; GO BACK IF EOF
+	inc	a	; IS IT A BINARY FILE??
+	jp	z,DERBFM	; BINARY IS WRONG FILE MODE
+MAINGO:	ld	hl,(PTRFIL)	; GET FILE POINTER
+	ld	bc,NMLOFC	; POINT TO NUMBER OF CHARS IN BUFFER
+	add	hl,bc	; BY ADDING OFFSET
+	inc	(hl)	; BACK UP FILE BY INCREMENTING COUNT
+	jp	MAIN
+
+	PAGE
+	SUBTTL	DISPATCH FOR DIRECT STATEMENT
+;
+; MAKE SURE WE'RE NOT READING A FILE IN
+;
+DIRDO:	
+	push	hl
+	ld	hl,(PTRFIL)
+	ld	a,h
+	or	l	; IS PTRFIL ZERO SO NOT FILE READING?
+	ld	de,0+ERRFDR	; "DIRECT STATEMENT IN FILE"
+	jp	nz,ERROR	; NOTE: LXI D, IS USED TO
+			; TO MAKE SOURCE CONVERSIONS EASIER
+	pop	hl	; GET BACK POINTER AT BUFMIN
+	jp	GONE	; EXECUTE DIRECT STATEMENT
+
+	PAGE
+	SUBTTL	SAVE COMMAND -- ASCII OR BINARY
+
+SAVE:	ld	d,MD.SQO	; ELIMINATE EARLIER VERSION
+			; AND CREATE EMPTY FILE
+	call	PRGFL2	; READ FILE NAME AND DISK NUMBER AND
+			; LOOK IT UP
+	dec	hl
+	call	CHRGTR	; END OF STATEMENT?
+	jp	z,BINSAV	; BINARY SAVE!!
+	call	SYNCHR
+	defb	44	; ONLY OPTION IS ",A"
+	EXTRN	PROSAV
+	cp	'P'	; PROTECTED SAVE?
+	jp	z,PROSAV	; DO IT
+	call	SYNCHR
+	defb	'A'	; FOR ASCII SAVE
+	jp	LIST	; USE THE LIST CODE TO DO THE OUTPUT
+			; CONTROL-CS ARE NOT ALLOWED
+			; AND AT THE END PTRFIL IS ZEROED
+BINSAV:	
+	call	SCCPTR	; GET RID OF POINTERS BEFORE SAVING
+	EXTRN	PROCHK
+	call	PROCHK	; DONT ALLOW BINARY SAVES OF PROTECTED PROGRAMS
+	ld	a,255	; ALWAYS START WITH 255
+BINPSV:	call	FILOU3	; SEND TO FILE
+	ld	hl,(VARTAB)	; GET STOP POINT
+	ex	de,hl		; SAVE IN [D,E]
+	ld	hl,(TXTTAB)	; GET START POINT
+BSAVLP:	call	DCOMPR	; REACHED THE END?
+	jp	z,PRGFIN	; REGET TEXT POINTER AND CLOSE FILE 0
+	ld	a,(hl)	; GET LINE DATA
+	inc	hl	; POINT AT NEXT DATA
+	push	de	; SAVE LIMIT
+	call	FILOU3	; SEND CHAR TO FILE
+	pop	de	; RESTORE LIMIT
+	jp	BSAVLP	; CONTINUE WITH LINE DATA
+
+	SUBTTL	DRIVER CODE FOR CLOSE
+
+CLOSE:	ld	bc,CLSFIL	; SERVICE ROUTINE ADDRESS
+	ld	a,(MAXFIL)	; HIGHEST POSSIBLE ARGUMENT
+			; WHICH MEANS DO ALL POSSIBLE
+RTALLR:	jp	nz,RTLOOP	; NOT END OF STATEMENT, SO SCAN ARGUMENTS
+	push	hl	; SAVE THE TEXT POINTER
+MRALL:	push	bc	; SAVE ROUTINE ADDRESS
+	push	af	; SAVE CURRENT VALUE
+	ld	de,RETALL	; RETURN ADDRESS
+	push	de	; SAVE IT TO COME BACK WITH
+	push	bc	; DISPATCH TO SERVICE ROUTINE
+	ret
+RETALL:	pop	af	; GET BACK OLD ARGUMENT
+	pop	bc	; GET BACK SERVICE ROUTINE ADDRESS
+	dec	a	; DECREMENT ARGUMENT
+	jp	p,MRALL	; LOOP ON MORE VALUES
+	pop	hl	; GET BACK THE TEXT POINTER
+	ret
+
+RETRTS:	pop	bc	; GET BACK SERVICE ROUTINE ADDRESS
+	pop	hl	; GET BACK THE TEXT POINTER
+	ld	a,(hl)	; SEE IF MORE ARGUMENTS
+	cp	44	; DELIMITED BY COMMA
+	ret	nz
+	call	CHRGTR	; READ FIRST CHARACTER OF FORMULA
+RTLOOP:	push	bc	; SAVE THE SERVICE ROUTINE ADDRESS
+	ld	a,(hl)	; GET POSSBLE "#"
+	cp	'#'	; IS IT
+	call	z,CHRGTR	; SKIP IT, ITS OPTIONAL
+	call	GETBYT	; READ THE ARGUMENT
+	ex	(sp),hl		; SAVE THE TEXT POINTER ON THE STACK
+			; AND SET [H,L]=SERVICE ADDRESS
+	push	hl	; SAVE THE SERVICE ADDRESS
+	ld	de,RETRTS	; PUT A RETURN ADDRESS ON THE STACK
+	push	de
+	jp	(hl)		; DISPATCH TO DO THE FUNCTION
+
+
+CLSALL:	push	de
+	push	bc	; SAVE [B,C] FOR STKINI
+	xor	a	; MAKE IT CLOSE ALL DISKS
+	call	CLOSE
+	pop	bc
+	pop	de	; GET BACK [D,E]
+	xor	a	; RETURN WITH [A]=0 AND Z ON
+	ret
+
+	PAGE
+	SUBTTL	"FIELD" STATEMENT FOR SETTING UP I/O STRINGS
+FIELD:	call	FILSCN	; GET DATA BLOCK POINTER IN [B,C]
+	jp	z,DERBFN	; "BAD FILE NUMBER" IF FILE NOT OPEN
+	sub	MD.RND	; MAKE SURE ITS A RANDOM FILE
+	jp	nz,DERBFM	; IF NOT, "BAD FILE MODE"
+	EXTRN	FD.SIZ,TEMPA,TEMPB,FD.DAT
+	ex	de,hl		; SAVE TEXT POINTER
+	ld	hl,0+FD.SIZ	; POINT TO RECORD SIZE
+	add	hl,bc
+	ld	a,(hl)	; GET IT
+	inc	hl
+	ld	h,(hl)
+	ld	l,a
+	ld	(TEMPA),hl	; STORE MAX ALLOWED
+	ld	hl,0	; ZERO MAX # OF CHARS
+	ld	(TEMPB),hl
+	ld	a,h	; MAKE [A]=0
+	ex	de,hl		; GET BACK TEXT POINTER
+	ld	de,0+FD.DAT	; POINT TO 5.0 FIELD BUFFER
+LOPFLD:	ex	de,hl		; SAVE TEXT POINTER IN [D,E]
+	add	hl,bc	; ADD ON DATA POINTER SO [H,L] NOW POINTS
+			; AT THE START OF THE DATA
+	ld	b,a	; SETUP COUNT OF CHARACTERS PAST BY
+			; IN DATA AREA, SO TOTAL IS NEVER GREATER THAN 128
+	ex	de,hl		; TEXT POINTER BACK INTO [H,L]
+			; [D,E]=POINTER INTO DATA AREA
+	ld	a,(hl)	; MORE "AS"S TO SCAN?
+	cp	44	; COMMA STARTS THE CLAUSE
+	ret	nz		; BACK TO NEWSTT IF NOT
+	push	de	; SAVE THE POINTER INTO THE DATA BLOCK
+	push	bc	; SAVE [B]=NUMBER OF CHARACTERS ALLOCATED
+	call	GTBYTC	; READ NUMBER INTO [A] FROM TEXT
+	push	af	; SAVE THIS NUMBER
+	call	SYNCHR
+	defb	'A'	; SCAN THE "AS"
+	call	SYNCHR
+	defb	'S'
+	call	PTRGET	; GET A POINTER AT THE STRING DESCRIPTOR
+	call	FRCSTR	; INTO [D,E]
+	pop	af	; GET THE NUMBER OF CHARACTERS
+	pop	bc	; GET THE NUMBER ALREADY USED
+	ex	(sp),hl		; SAVE THE TEXT POINTER AND
+			; [H,L]=POINTER INTO DATA BLOCK
+	ld	c,a	; SAVE # OF CHARACTERS IN [C]
+	push	de	; SAVE [D,E]
+	push	hl	; SAVE [H,L]
+	ld	hl,(TEMPB)	; GET TOTAL SO FAR
+	ld	b,0	; ACCUMULATE COUNT
+	add	hl,bc
+	ld	(TEMPB),hl	; SAVE TOTAL AGAIN
+	ex	de,hl		; TOTAL TO [D,E]
+	ld	hl,(TEMPA)	; GET MAX ALLOWED
+	call	DCOMPR	; IN RANGE?
+	jp	c,DERFOV	; NO, GIVE ERROR
+	pop	hl	; RESTORE [H,L]
+	pop	de	; RESTORE [D,E]
+	ex	de,hl		; [H,L] POINT AT STRING DESCRIPTOR
+	ld	(hl),c	; STORE THE LENGTH
+	inc	hl
+	ld	(hl),e	; STORE THE POINTER INTO THE DATA BLOCK
+	inc	hl
+	ld	(hl),d
+	pop	hl	; GET BACK THE TEXT POINTER
+	IFF	DATPSC-256
+	jp	nz,LOPFLD	; IF TOTAL ADDED UP TO NOT 256, GO BACK FOR MORE
+	ld	a,c	; SEE HOW MUCH WE ADDED
+	or	a	; TEST
+	ret	nz
+	ENDIF		; JUST ADDED UP TO 256, GIVE SYNTAX ERROR IF MORE
+	jp	LOPFLD	; CONTINUE SCANNING "AS" CLAUSES IF MORE
+	PAGE
+	SUBTTL	Random Non-I/O -- LSET/RSET/FIELD
+
+;LSET/RSET stringvar = stringexp
+;
+; If stringvar points to an I/O buffer, use the string size to
+;justify string. If stringvar is a literal, make new var with length
+;of literal. If stringvar points to string space, use it. If the
+;length of the variable is zero, return the null string. If a copy
+;must be created, and stringexp is a temporary, use this space over
+;unless length stringvar greater than stringexp.
+
+RSET:	defb	0f6h	; ORI <STC>
+LSET:	scf		; Set carry if lset
+	push	af	; Save LSET/RSET flag
+	call	PTRGET	; Get pointer to stringvar
+	call	FRCSTR	; Must be a string variable
+	push	de	; Save pointer to descriptor
+	call	FRMEQL	; EAT "=" AND EVALUATE STRINGEXP
+	pop	bc	;  [B,C] = ptr to descr.
+	ex	(sp),hl		; Text ptr on bottom of stack
+	push	hl	; LSET/RSET flag next
+	push	bc	; Put descr. ptr back on
+	call	FRESTR	; Error if not string, free temp.
+	ld	b,(hl)	; Get length of stringexp
+	ex	(sp),hl		;  [H,L] = descr. of var,save othr
+	ld	a,(hl)	; Get length of stringvar
+	ld	c,a	; Save in [C]
+	push	bc	; Save lengths of both
+	push	hl	; Save descriptor pointer
+	push	af	; PSW zero if was temp.
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)	; Get ptr to stringvar text
+	or	a	; stringvar null?
+	jp	z,RETCUR	; Yes, don't change
+	ld	hl,(TXTTAB)
+	call	DCOMPR	; Stringvar in disk buffer?
+	jp	nc,OLDSTR	; Yes, use it
+	ld	hl,(VARTAB)
+	call	DCOMPR	; stringvar in program(literal)?
+	jp	c,OLDSTR	; No, in string space so use it
+;Need to make new string for result since stringvar points to a literal.
+;If stringexp was a temporary, it has been freed. If the length of
+;stringexp is greater than or equal to the length of stringvar, GETSPA
+;can be called and no garbage collection can occur so temp. can be reused.
+;If stringvar is greater, must get a temp. to point to stringexp if it
+;was a temp. , then call GETSPA which in this case can garbage collect.
+	ld	e,c
+	ld	d,0	; # BYTES TO ALLOCATE FOR RESULT
+	EXTRN	STREND
+	ld	hl,(STREND)
+	add	hl,de
+	ex	de,hl
+	ld	hl,(FRETOP)
+	call	DCOMPR	; WILL GETSPA GARBAGE COLLECT?
+	jp	c,MAKDSC	; Yes, better have stringexp temp.
+MADESC:	pop	af
+	ld	a,c	; Get length of stringvar
+	call	GETSPA	; Get space for result
+	pop	hl	; Get stringvar descr.
+	pop	bc	; Get lengths off stack
+	ex	(sp),hl		; Get what we wanted, stringexp descr.
+	push	de
+	push	bc
+	call	FRESTR	; Free temp if any
+	pop	bc
+	pop	de
+	ex	(sp),hl
+	push	bc	; Restore stack to previous state
+	push	hl
+	inc	hl
+	ld	(hl),e
+	inc	hl
+	ld	(hl),d	; Set pointer to stringvar copy
+	push	af
+OLDSTR:	pop	af
+	pop	hl	; Get stringvar descr.
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)	; Get pointer to text area
+	pop	bc	; Get lengths off stack
+	pop	hl	; Get pointer to stringexp descr.
+	push	de
+	inc	hl
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)	; Get ptr to stringexp text
+	ex	de,hl		; Put pointer in [H,L]
+	pop	de
+	ld	a,c	; Get length of field(stringvar)
+	cp	b
+	jp	nc,FILDOK	; Jump if field large enough for result
+	ld	b,a	; Save # of bytes to copy
+FILDOK:	sub	b
+	ld	c,a	; [C] = # blanks to fill
+	pop	af	; Get LSET/RSET flag
+	call	nc,BLKFIL	; Fill leading if RSET
+	inc	b	; In case zero
+COPLOP:	dec	b	; Decr. # to copy
+	jp	z,LRSTDN	; Done when all copied
+	ld	a,(hl)	; Get byte from stringexp
+	ld	(de),a	; Copy to stringvar
+	inc	hl
+	inc	de
+	jp	COPLOP
+
+RETCUR:	pop	bc
+	pop	bc
+	pop	bc
+	pop	bc
+	pop	bc	; Get garb off stack
+LRSTDN:	call	c,BLKFIL	; Fill trailing if LSET
+	pop	hl	; Restore text pointer
+	ret
+
+BLKFIL:	ld	a,' '	; Fill with spaces
+	inc	c	; In case zero
+BLKFL1:	dec	c	; Decr. # to fill
+	ret	z		; Return when done
+	ld	(de),a	; Store space
+	inc	de
+	jp	BLKFL1
+
+; If stringexp was a temporary, create a new temporary to point to
+; stringexp since old one was freed. This must be done since GETSPA
+; will be called and garbage collection might occur. If stringexp is
+; not a temporary, return.
+
+MAKDSC:	pop	af	; Get temp flag
+	pop	hl
+	pop	bc
+	ex	(sp),hl		; Dig down to stringexp descr.
+	ex	de,hl		; FRETMS wants [D,E]
+	jp	nz,MAKDS1	; Not a temp, don't reallocate
+	push	bc
+	ld	a,b
+	call	STRINI	; Make a temp point to stringexp
+	call	PUTNEW	; Get a temp to point to it
+	pop	bc
+MAKDS1:	ex	(sp),hl
+	push	bc
+	push	hl	; Restore stack to previous state
+	push	af
+	jp	MADESC
+	PAGE
+	SUBTTL	Program I/O -- Fixed Length INPUT
+
+; Format:
+;		stringvar = INPUT$(#bytes[,[#] file#])
+;If no file # is given, characters will be read from the user's
+; terminal. No echoing will be done and no editing will be allowed
+; (i.e. rubout,@,_,^U are just input as characters).
+
+	PUBLIC	FIXINP
+FIXINP:	call	CHRGTR
+	call	SYNCHR
+	defb	'$'	; STRING FUNCTION
+	call	SYNCHR
+	defb	'('
+	call	GETBYT	; Get # of bytes to read
+	push	de	; Save # of bytes to read
+	ld	a,(hl)
+	cp	2ch	; Read from disk file?
+	jp	nz,REDTTY	; No, from user's terminal
+	call	CHRGTR
+	call	FILSCN	; Set up file #
+	cp	MD.SQO	; SEQUENTIAL OUTPUT FILE?
+	jp	z,DERBFM	; THEN BAD FILE MODE
+	call	FILSET	; SET UP PTRFIL
+	xor	a	; SET ZERO FOR FLAG
+REDTTY:	push	af	; NON ZERO SET IF TERMINAL I/O
+	call	SYNCHR
+	defb	')'	; Must have paren
+	pop	af	; Get flag off stack
+	ex	(sp),hl		; Save text ptr, [L]=# to read
+	push	af	; Save flag
+	ld	a,l
+	or	a	; Read no characters?
+	jp	z,FCERR	; Yes, error
+	push	hl	; Save #
+	call	STRINI	; Get space for string
+	ex	de,hl
+	pop	bc	; [C] = # to read
+FIXLOP:	pop	af
+	push	af	; NON-ZERO set if should read from TTY
+	jp	z,DSKCHR	; Read from disk file
+	EXTRN	CHARCG
+	call	CHARCG	; GET CHAR IF ONE
+	jp	nz,CHARCW	; WAS ONE
+	call	INCHRI	; Read a char from terminal
+CHARCW:	
+;Note : will check flag on interrupt ^c
+	cp	3	; Control-C?
+	jp	z,INTCTC	; Yes, stop
+PUTCHR:	ld	(hl),a	; Put char into string
+	inc	hl
+	dec	c	; Read enough yet?
+	jp	nz,FIXLOP	; No, read more
+	pop	af	; Get flag off stack
+	call	FINPRT	; Clear PTRFIL
+	jp	PUTNEW	; Return string as result
+INTCTC:	ld	hl,(SAVSTK)	; GET SAVED STACK POINTER
+	ld	sp,hl		; SET [H,L] TO IT
+	jp	ENDCON	; STOP PROGRAM
+
+DSKCHR:	call	INDSKC	; Get char from file
+	jp	c,DERRPE	; If carry, read past EOF
+	jp	PUTCHR	; Put char in string
+	end
+
